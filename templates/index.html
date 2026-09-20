@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Catalog</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header>
+  <h1>Photo Catalog</h1>
+  <form class="filters" method="get" action="{{ url_for('index') }}">
+    <select name="tag" onchange="this.form.submit()">
+      <option value="">All tags</option>
+      {% for t in all_tags %}
+      <option value="{{ t }}" {% if t == tag_filter %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="q" placeholder="search descriptions..." value="{{ search }}">
+    <label><input type="checkbox" name="marked" value="1" {% if marked_only %}checked{% endif %} onchange="this.form.submit()"> marked for removal only</label>
+    <button type="submit">Filter</button>
+    {% if tag_filter or search or marked_only %}<a class="clear" href="{{ url_for('index') }}">Clear</a>{% endif %}
+  </form>
+  <p class="summary">
+    {{ total }} photo{{ 's' if total != 1 else '' }}
+    {%- if tag_filter %} tagged &ldquo;{{ tag_filter }}&rdquo;{% endif %}
+    {%- if marked_only %}, marked for removal{% endif %}
+    &middot; page {{ page }} of {{ total_pages }}
+  </p>
+</header>
+
+<div class="grid">
+  {% for p in photos %}
+  <div class="card {% if p['marked_for_removal'] %}marked{% endif %}" data-photo-id="{{ p['id'] }}">
+
+    <a href="{{ url_for('image', photo_id=p['id']) }}" target="_blank" title="Open full image">
+      <img class="thumb" src="{{ url_for('thumb', photo_id=p['id']) }}" loading="lazy" alt="{{ p['filename'] }}">
+    </a>
+
+    <div class="filename" title="{{ p['filepath'] }}">{{ p['filename'] }}</div>
+    <div class="submeta">
+      {{ p['size_bytes'] | filesize }}{% if p['date_taken'] %} &middot; {{ p['date_taken'] }}{% endif %}
+    </div>
+
+    {% if p['status'] == 'error' %}
+    <div class="untagged-badge">&#9888; not yet tagged{% if p['error_message'] %} &mdash; {{ p['error_message'] }}{% endif %}</div>
+    {% endif %}
+
+    <div class="tags" data-tags-for="{{ p['id'] }}">
+      {% for tag in tags_by_photo.get(p['id'], []) %}
+      <span class="tag" data-tag-id="{{ tag['id'] }}" data-tag-name="{{ tag['name'] }}">{{ tag['name'] }}<button class="tag-remove" data-tag-id="{{ tag['id'] }}" title="Remove tag">&times;</button></span>
+      {% endfor %}
+      <input type="text" class="add-tag-input" placeholder="+ add tag" maxlength="40">
+    </div>
+
+    <div class="quick-tag-row">
+      {% set photo_tags = tags_by_photo.get(p['id'], []) %}
+      {% set has_bird = 'bird' in (photo_tags | map(attribute='name') | list) %}
+      <button type="button" class="quick-tag-btn{% if has_bird %} active{% endif %}" data-tag="bird" title="{% if has_bird %}Remove 'bird' tag{% else %}Add 'bird' tag{% endif %}">
+        {% if has_bird %}&check; bird{% else %}+ bird{% endif %}
+      </button>
+    </div>
+
+    <textarea class="description" rows="2" placeholder="no description yet">{{ p['description'] or '' }}</textarea>
+    <div class="desc-row">
+      <button class="save-desc">Save</button>
+      <span class="saved-flash"></span>
+    </div>
+
+    <label class="mark-removal">
+      <input type="checkbox" class="mark-checkbox" {% if p['marked_for_removal'] %}checked{% endif %}>
+      mark for removal
+    </label>
+  </div>
+  {% else %}
+  <p class="empty">No photos match this filter.</p>
+  {% endfor %}
+</div>
+
+<nav class="pager">
+  {% if page > 1 %}<a href="{{ url_for('index', page=page-1, tag=tag_filter or None, q=search or None, marked='1' if marked_only else None) }}">&laquo; prev</a>{% endif %}
+  <span>page {{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}<a href="{{ url_for('index', page=page+1, tag=tag_filter or None, q=search or None, marked='1' if marked_only else None) }}">next &raquo;</a>{% endif %}
+</nav>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
