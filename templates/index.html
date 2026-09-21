@@ -56,10 +56,13 @@
 
     <div class="quick-tag-row">
       {% set photo_tags = tags_by_photo.get(p['id'], []) %}
-      {% set has_bird = 'bird' in (photo_tags | map(attribute='name') | list) %}
-      <button type="button" class="quick-tag-btn{% if has_bird %} active{% endif %}" data-tag="bird" title="{% if has_bird %}Remove 'bird' tag{% else %}Add 'bird' tag{% endif %}">
-        {% if has_bird %}&check; bird{% else %}+ bird{% endif %}
-      </button>
+      {% set photo_tag_names = photo_tags | map(attribute='name') | list %}
+      {% for qtag in ['bird', '4boys'] %}
+        {% set is_active = qtag in photo_tag_names %}
+        <button type="button" class="quick-tag-btn{% if is_active %} active{% endif %}" data-tag="{{ qtag }}" title="{% if is_active %}Remove '{{ qtag }}' tag{% else %}Add '{{ qtag }}' tag{% endif %}">
+          {% if is_active %}&check; {{ qtag }}{% else %}+ {{ qtag }}{% endif %}
+        </button>
+      {% endfor %}
     </div>
 
     <textarea class="description" rows="2" placeholder="no description yet">{{ p['description'] or '' }}</textarea>

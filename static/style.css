@@ -89,6 +89,7 @@ h1 { margin: 0 0 10px; font-size: 1.4rem; }
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 .quick-tag-btn {
   font-size: 0.75rem;

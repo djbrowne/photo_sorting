@@ -14,7 +14,7 @@ SETUP
 
 RUN
 ---
-    python3 app.py --db /path/to/photos.db
+    python3 app.py --db /path/to/photos.db 
 
     Then from any device on your LAN:  http://<this-machine-ip>:8080
 
