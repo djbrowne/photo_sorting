@@ -16,7 +16,50 @@ header {
   border-bottom: 1px solid #ddd;
   margin-bottom: 16px;
 }
-h1 { margin: 0 0 10px; font-size: 1.4rem; }
+h1 { margin: 0; font-size: 1.4rem; }
+
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.header-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+  text-decoration: none;
+  font-weight: 500;
+  transition: filter 0.15s;
+}
+.stat-badge:hover {
+  filter: brightness(0.95);
+}
+.stat-badge.stat-4boys {
+  background: #ebf8ff;
+  color: #2b6cb0;
+  border: 1px solid #90cdf4;
+}
+.stat-badge.stat-marked {
+  background: #fdf2f2;
+  color: #c0392b;
+  border: 1px solid #fca5a5;
+}
+.stat-badge .stat-count {
+  font-weight: 700;
+}
 
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .filters select, .filters input[type="text"] {

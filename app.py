@@ -133,10 +133,20 @@ def index():
 
     all_tags = [r[0] for r in db.execute("SELECT name FROM tags ORDER BY name")]
 
+    count_4boys = db.execute(
+        "SELECT COUNT(DISTINCT pt.photo_id) FROM photo_tags pt JOIN tags t ON pt.tag_id = t.id WHERE t.name = '4boys'"
+    ).fetchone()[0]
+
+    count_marked = db.execute(
+        """SELECT COUNT(*) FROM photos WHERE marked_for_removal = 1
+           OR id IN (SELECT photo_id FROM photo_tags pt JOIN tags t ON pt.tag_id = t.id WHERE t.name = 'marked for removal')"""
+    ).fetchone()[0]
+
     return render_template(
         "index.html", photos=rows, tags_by_photo=tags_by_photo, all_tags=all_tags,
         page=page, total_pages=total_pages, total=total,
         tag_filter=tag_filter, marked_only=marked_only, search=search,
+        count_4boys=count_4boys, count_marked=count_marked,
     )
 
 

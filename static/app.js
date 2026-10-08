@@ -10,6 +10,16 @@ async function api(url, options = {}) {
   return res.json();
 }
 
+function updateStatCount(id, delta) {
+  const el = document.getElementById(id);
+  if (el) {
+    const cur = parseInt(el.textContent, 10);
+    if (!isNaN(cur)) {
+      el.textContent = Math.max(0, cur + delta);
+    }
+  }
+}
+
 grid.addEventListener("change", async (e) => {
   if (!e.target.classList.contains("mark-checkbox")) return;
   const card = e.target.closest(".card");
@@ -17,6 +27,7 @@ grid.addEventListener("change", async (e) => {
   try {
     const data = await api(`/api/photo/${id}/toggle-removal`, { method: "POST" });
     card.classList.toggle("marked", data.marked_for_removal);
+    updateStatCount("stat-count-marked", data.marked_for_removal ? 1 : -1);
   } catch (err) {
     alert("Could not update: " + err.message);
     e.target.checked = !e.target.checked; // revert on failure
@@ -47,6 +58,7 @@ grid.addEventListener("click", async (e) => {
         await api(`/api/photo/${id}/tags/${tagId}`, { method: "DELETE" });
         existingTagSpan.remove();
         syncQuickTagButton(card, tagName, false);
+        if (tagName === "4boys") updateStatCount("stat-count-4boys", -1);
       } else {
         const tag = await api(`/api/photo/${id}/tags`, {
           method: "POST",
@@ -62,6 +74,7 @@ grid.addEventListener("click", async (e) => {
         tagsContainer.insertBefore(span, addInput);
         card.querySelector(".untagged-badge")?.remove();
         syncQuickTagButton(card, tagName, true);
+        if (tagName === "4boys") updateStatCount("stat-count-4boys", 1);
       }
     } catch (err) {
       alert("Could not update tag: " + err.message);
@@ -82,6 +95,7 @@ grid.addEventListener("click", async (e) => {
       tagSpan.remove();
       if (tagName) {
         syncQuickTagButton(card, tagName, false);
+        if (tagName === "4boys") updateStatCount("stat-count-4boys", -1);
       }
     } catch (err) {
       alert("Could not remove tag: " + err.message);
@@ -128,6 +142,7 @@ grid.addEventListener("keydown", async (e) => {
       span.dataset.tagName = tag.name;
       span.innerHTML = `${tag.name}<button class="tag-remove" data-tag-id="${tag.id}" title="Remove tag">&times;</button>`;
       input.parentElement.insertBefore(span, input);
+      if (tag.name === "4boys") updateStatCount("stat-count-4boys", 1);
     }
     input.value = "";
     card.querySelector(".untagged-badge")?.remove();
