@@ -131,10 +131,41 @@ def index():
         ):
             tags_by_photo[photo_id].append({"id": tag_id, "name": name})
 
-    all_tags = [r[0] for r in db.execute("SELECT name FROM tags ORDER BY name")]
+    tag_rows = db.execute(
+        """SELECT t.name, COUNT(pt.photo_id) as count
+           FROM tags t
+           JOIN photo_tags pt ON t.id = pt.tag_id
+           JOIN photos p ON pt.photo_id = p.id
+           WHERE p.marked_for_removal = 0
+           GROUP BY t.id, t.name
+           ORDER BY t.name"""
+    ).fetchall()
+
+    total_photos = db.execute("SELECT COUNT(*) FROM photos WHERE marked_for_removal = 0").fetchone()[0]
+
+    max_name_len = max([len(r["name"]) for r in tag_rows] + [len("All tags")], default=8)
+    max_cnt_len = max([len(str(r["count"])) for r in tag_rows] + [len(str(total_photos))], default=1)
+    col_width = max(34, max_name_len + max_cnt_len + 3)
+
+    all_spaces = "\u00A0" * max(2, col_width - len("All tags") - len(str(total_photos)))
+    all_tags_display = f"All tags{all_spaces}{total_photos}"
+
+    all_tags = []
+    for r in tag_rows:
+        name = r["name"]
+        cnt_str = str(r["count"])
+        spaces = "\u00A0" * max(2, col_width - len(name) - len(cnt_str))
+        all_tags.append({
+            "name": name,
+            "count": r["count"],
+            "display": f"{name}{spaces}{cnt_str}",
+        })
 
     count_4boys = db.execute(
-        "SELECT COUNT(DISTINCT pt.photo_id) FROM photo_tags pt JOIN tags t ON pt.tag_id = t.id WHERE t.name = '4boys'"
+        """SELECT COUNT(DISTINCT pt.photo_id) FROM photo_tags pt
+           JOIN tags t ON pt.tag_id = t.id
+           JOIN photos p ON pt.photo_id = p.id
+           WHERE t.name = '4boys' AND p.marked_for_removal = 0"""
     ).fetchone()[0]
 
     count_marked = db.execute(
@@ -144,6 +175,7 @@ def index():
 
     return render_template(
         "index.html", photos=rows, tags_by_photo=tags_by_photo, all_tags=all_tags,
+        all_tags_display=all_tags_display,
         page=page, total_pages=total_pages, total=total,
         tag_filter=tag_filter, marked_only=marked_only, search=search,
         count_4boys=count_4boys, count_marked=count_marked,

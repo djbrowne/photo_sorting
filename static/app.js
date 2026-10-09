@@ -28,6 +28,10 @@ grid.addEventListener("change", async (e) => {
     const data = await api(`/api/photo/${id}/toggle-removal`, { method: "POST" });
     card.classList.toggle("marked", data.marked_for_removal);
     updateStatCount("stat-count-marked", data.marked_for_removal ? 1 : -1);
+    const has4boys = card.querySelector('.tags .tag[data-tag-name="4boys"]');
+    if (has4boys) {
+      updateStatCount("stat-count-4boys", data.marked_for_removal ? -1 : 1);
+    }
   } catch (err) {
     alert("Could not update: " + err.message);
     e.target.checked = !e.target.checked; // revert on failure

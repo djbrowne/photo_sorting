@@ -23,9 +23,9 @@
   </div>
   <form class="filters" method="get" action="{{ url_for('index') }}">
     <select name="tag" onchange="this.form.submit()">
-      <option value="">All tags</option>
+      <option value="">{{ all_tags_display }}</option>
       {% for t in all_tags %}
-      <option value="{{ t }}" {% if t == tag_filter %}selected{% endif %}>{{ t }}</option>
+      <option value="{{ t.name }}" {% if t.name == tag_filter %}selected{% endif %}>{{ t.display }}</option>
       {% endfor %}
     </select>
     <input type="text" name="q" placeholder="search descriptions..." value="{{ search }}">
