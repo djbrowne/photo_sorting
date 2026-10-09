@@ -25,10 +25,11 @@ RUN
 """
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 
-from flask import Flask, request, jsonify, render_template, send_file, abort, g
+from flask import Flask, request, jsonify, render_template, send_file, abort, g, redirect, url_for
 from PIL import Image, ImageDraw
 
 try:
@@ -42,17 +43,26 @@ app = Flask(__name__)
 DB_PATH = "photos.db"           # set from --db at startup
 THUMB_DIR = Path("thumbnails")  # cache dir for generated thumbnails, created on demand
 THUMB_SIZE = (320, 320)
-PER_PAGE = 60
+PER_PAGE = 50
+
+DEFAULT_SETTINGS = {
+    "all_tags_count": "1",
+    "show_zero_tags": "0",
+    "count_style": "column",
+    "dark_mode": "0",
+    "per_page": "50",
+}
 
 
 # --------------------------------------------------------------------------
-# Database
+# Database & Settings
 # --------------------------------------------------------------------------
 
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
+        g.db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     return g.db
 
 
@@ -63,6 +73,22 @@ def close_db(exception=None):
         db.close()
 
 
+def get_settings():
+    db = get_db()
+    s = dict(DEFAULT_SETTINGS)
+    for row in db.execute("SELECT key, value FROM settings"):
+        s[row["key"]] = row["value"]
+    return s
+
+
+def save_settings(new_settings):
+    db = get_db()
+    for k in DEFAULT_SETTINGS:
+        if k in new_settings:
+            db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(new_settings[k])))
+    db.commit()
+
+
 def migrate(db_path):
     """catalog_photos.py's schema has no marked_for_removal column -- add it once, if missing."""
     conn = sqlite3.connect(db_path)
@@ -71,6 +97,13 @@ def migrate(db_path):
         conn.execute("ALTER TABLE photos ADD COLUMN marked_for_removal INTEGER NOT NULL DEFAULT 0")
         conn.commit()
         print("Migrated photos.db: added marked_for_removal column.")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )"""
+    )
+    conn.commit()
     conn.close()
 
 
@@ -88,6 +121,15 @@ def filesize_filter(n):
 @app.route("/")
 def index():
     db = get_db()
+    settings = get_settings()
+
+    try:
+        per_page = int(settings.get("per_page", 50))
+    except (ValueError, TypeError):
+        per_page = 50
+    if per_page not in (10, 20, 30, 50):
+        per_page = 50
+
     page = max(1, request.args.get("page", 1, type=int))
     tag_filter = request.args.get("tag", "", type=str).strip()
     marked_only = request.args.get("marked", "", type=str) == "1"
@@ -108,15 +150,15 @@ def index():
     total = db.execute(
         f"SELECT COUNT(DISTINCT p.id) FROM photos p {join} {where_sql}", params
     ).fetchone()[0]
-    total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    offset = (page - 1) * PER_PAGE
+    offset = (page - 1) * per_page
 
     rows = db.execute(
         f"""SELECT DISTINCT p.* FROM photos p {join} {where_sql}
             ORDER BY (p.date_taken IS NULL), p.date_taken DESC, p.id DESC
             LIMIT ? OFFSET ?""",
-        params + [PER_PAGE, offset],
+        params + [per_page, offset],
     ).fetchall()
 
     photo_ids = [r["id"] for r in rows]
@@ -131,15 +173,28 @@ def index():
         ):
             tags_by_photo[photo_id].append({"id": tag_id, "name": name})
 
-    tag_rows = db.execute(
-        """SELECT t.name, COUNT(pt.photo_id) as count
-           FROM tags t
-           JOIN photo_tags pt ON t.id = pt.tag_id
-           JOIN photos p ON pt.photo_id = p.id
-           WHERE p.marked_for_removal = 0
-           GROUP BY t.id, t.name
-           ORDER BY t.name"""
-    ).fetchall()
+    show_zero_tags = settings.get("show_zero_tags") == "1"
+    all_tags_count = settings.get("all_tags_count") != "0"
+    count_style = settings.get("count_style", "column")
+
+    if show_zero_tags:
+        tag_rows = db.execute(
+            """SELECT t.name, COUNT(p.id) as count
+               FROM tags t
+               LEFT JOIN photo_tags pt ON t.id = pt.tag_id
+               LEFT JOIN photos p ON pt.photo_id = p.id AND p.marked_for_removal = 0
+               GROUP BY t.id, t.name
+               ORDER BY t.name"""
+        ).fetchall()
+    else:
+        tag_rows = db.execute(
+            """SELECT t.name, COUNT(p.id) as count
+               FROM tags t
+               JOIN photo_tags pt ON t.id = pt.tag_id
+               JOIN photos p ON pt.photo_id = p.id AND p.marked_for_removal = 0
+               GROUP BY t.id, t.name
+               ORDER BY t.name"""
+        ).fetchall()
 
     total_photos = db.execute("SELECT COUNT(*) FROM photos WHERE marked_for_removal = 0").fetchone()[0]
 
@@ -147,18 +202,28 @@ def index():
     max_cnt_len = max([len(str(r["count"])) for r in tag_rows] + [len(str(total_photos))], default=1)
     col_width = max(34, max_name_len + max_cnt_len + 3)
 
-    all_spaces = "\u00A0" * max(2, col_width - len("All tags") - len(str(total_photos)))
-    all_tags_display = f"All tags{all_spaces}{total_photos}"
+    if all_tags_count:
+        if count_style == "column":
+            all_spaces = "\u00A0" * max(2, col_width - len("All tags") - len(str(total_photos)))
+            all_tags_display = f"All tags{all_spaces}{total_photos}"
+        else:
+            all_tags_display = f"All tags ({total_photos})"
+    else:
+        all_tags_display = "All tags"
 
     all_tags = []
     for r in tag_rows:
         name = r["name"]
         cnt_str = str(r["count"])
-        spaces = "\u00A0" * max(2, col_width - len(name) - len(cnt_str))
+        if count_style == "column":
+            spaces = "\u00A0" * max(2, col_width - len(name) - len(cnt_str))
+            display = f"{name}{spaces}{cnt_str}"
+        else:
+            display = f"{name} ({cnt_str})"
         all_tags.append({
             "name": name,
             "count": r["count"],
-            "display": f"{name}{spaces}{cnt_str}",
+            "display": display,
         })
 
     count_4boys = db.execute(
@@ -179,6 +244,7 @@ def index():
         page=page, total_pages=total_pages, total=total,
         tag_filter=tag_filter, marked_only=marked_only, search=search,
         count_4boys=count_4boys, count_marked=count_marked,
+        settings=settings,
     )
 
 
@@ -283,6 +349,143 @@ def remove_tag(photo_id, tag_id):
     db.execute("DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?", (photo_id, tag_id))
     db.commit()
     return jsonify({"removed": True})
+
+
+# --------------------------------------------------------------------------
+# Settings Routes
+# --------------------------------------------------------------------------
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings_page():
+    message = None
+    msg_type = "success"
+    if request.method == "POST":
+        new_settings = {
+            "all_tags_count": "1" if request.form.get("all_tags_count") == "1" else "0",
+            "show_zero_tags": "1" if request.form.get("show_zero_tags") == "1" else "0",
+            "count_style": "parens" if request.form.get("count_style") == "parens" else "column",
+            "dark_mode": "1" if request.form.get("dark_mode") == "1" else "0",
+            "per_page": request.form.get("per_page", "50"),
+        }
+        if new_settings["per_page"] not in ("10", "20", "30", "50"):
+            new_settings["per_page"] = "50"
+        save_settings(new_settings)
+        message = "Settings saved successfully."
+
+    settings = get_settings()
+    current_db = Path(DB_PATH).name
+    other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
+    return render_template(
+        "settings.html",
+        settings=settings,
+        other_dbs=other_dbs,
+        current_db=current_db,
+        message=message,
+        msg_type=msg_type,
+    )
+
+
+@app.route("/settings/export")
+def settings_export():
+    settings = get_settings()
+    response = jsonify(settings)
+    response.headers["Content-Disposition"] = 'attachment; filename="photo_catalog_settings.json"'
+    return response
+
+
+@app.route("/settings/import-json", methods=["POST"])
+def settings_import_json():
+    file = request.files.get("settings_file")
+    current_db = Path(DB_PATH).name
+    other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
+    if not file or not file.filename:
+        return redirect(url_for("settings_page"))
+    try:
+        data = json.load(file)
+        if isinstance(data, dict):
+            save_settings(data)
+            return render_template(
+                "settings.html",
+                settings=get_settings(),
+                other_dbs=other_dbs,
+                current_db=current_db,
+                message="Successfully imported settings from JSON file.",
+                msg_type="success",
+            )
+        else:
+            raise ValueError("Invalid format: expected JSON object")
+    except Exception as e:
+        return render_template(
+            "settings.html",
+            settings=get_settings(),
+            other_dbs=other_dbs,
+            current_db=current_db,
+            message=f"Failed to import settings: {e}",
+            msg_type="error",
+        )
+
+
+@app.route("/settings/import-db", methods=["POST"])
+def settings_import_db():
+    source_db_name = request.form.get("source_db", "").strip()
+    source_path = Path(source_db_name)
+    current_db = Path(DB_PATH).name
+    other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
+
+    if not source_path.is_file() or source_db_name == current_db or source_path.suffix != ".db":
+        return render_template(
+            "settings.html",
+            settings=get_settings(),
+            other_dbs=other_dbs,
+            current_db=current_db,
+            message="Invalid source database selected.",
+            msg_type="error",
+        )
+
+    try:
+        conn = sqlite3.connect(source_path)
+        conn.row_factory = sqlite3.Row
+        has_table = conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='settings'"
+        ).fetchone()[0]
+        if not has_table:
+            conn.close()
+            return render_template(
+                "settings.html",
+                settings=get_settings(),
+                other_dbs=other_dbs,
+                current_db=current_db,
+                message=f"No settings table found in '{source_db_name}'.",
+                msg_type="error",
+            )
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        imported = {row["key"]: row["value"] for row in rows}
+        conn.close()
+        if imported:
+            save_settings(imported)
+            msg = f"Successfully copied {len(imported)} settings from '{source_db_name}'."
+            m_type = "success"
+        else:
+            msg = f"No settings found in '{source_db_name}'."
+            m_type = "error"
+    except Exception as e:
+        return render_template(
+            "settings.html",
+            settings=get_settings(),
+            other_dbs=other_dbs,
+            current_db=current_db,
+            message=f"Error reading '{source_db_name}': {e}",
+            msg_type="error",
+        )
+
+    return render_template(
+        "settings.html",
+        settings=get_settings(),
+        other_dbs=other_dbs,
+        current_db=current_db,
+        message=msg,
+        msg_type=m_type,
+    )
 
 
 # --------------------------------------------------------------------------
