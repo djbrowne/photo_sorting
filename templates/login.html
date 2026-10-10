@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login - Photo Catalog</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-body {% if current_settings and current_settings.dark_mode == '1' %}dark{% endif %}">
+
+<div class="login-wrapper">
+  <div class="login-card">
+    <div class="login-header">
+      <h1>Photo Catalog</h1>
+      <p class="login-sub">Sign in to your account</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">
+      {{ error }}
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('login') }}" class="login-form">
+      <input type="hidden" name="next" value="{{ next }}">
+
+      <div class="form-row">
+        <label for="username" class="form-label">Username</label>
+        <input type="text" id="username" name="username" required autofocus autocomplete="username" class="form-input">
+      </div>
+
+      <div class="form-row">
+        <label for="password" class="form-label">Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password" class="form-input">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+    </form>
+  </div>
+</div>
+
+</body>
+</html>

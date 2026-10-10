@@ -25,11 +25,16 @@ RUN
 """
 
 import argparse
+import getpass
 import json
+import secrets
 import sqlite3
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, request, jsonify, render_template, send_file, abort, g, redirect, url_for
+from flask import Flask, request, jsonify, render_template, send_file, abort, g, redirect, url_for, session, flash
+from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, ImageDraw
 
 try:
@@ -39,6 +44,25 @@ except ImportError:
     pass
 
 app = Flask(__name__)
+
+SECRET_KEY_FILE = Path(".secret_key")
+
+def get_or_create_secret_key():
+    if SECRET_KEY_FILE.is_file():
+        try:
+            k = SECRET_KEY_FILE.read_text().strip()
+            if k:
+                return k
+        except Exception:
+            pass
+    k = secrets.token_hex(32)
+    try:
+        SECRET_KEY_FILE.write_text(k)
+    except Exception:
+        pass
+    return k
+
+app.secret_key = get_or_create_secret_key()
 
 DB_PATH = "photos.db"           # set from --db at startup
 THUMB_DIR = Path("thumbnails")  # cache dir for generated thumbnails, created on demand
@@ -62,7 +86,7 @@ def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
-        g.db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        g.db.execute("PRAGMA foreign_keys = ON")
     return g.db
 
 
@@ -73,12 +97,32 @@ def close_db(exception=None):
         db.close()
 
 
-def get_settings():
+def get_user_settings(user_id=None):
     db = get_db()
     s = dict(DEFAULT_SETTINGS)
     for row in db.execute("SELECT key, value FROM settings"):
         s[row["key"]] = row["value"]
+    if user_id:
+        for row in db.execute("SELECT key, value FROM user_settings WHERE user_id = ?", (user_id,)):
+            s[row["key"]] = row["value"]
     return s
+
+
+def get_settings(user_id=None):
+    if user_id is None and hasattr(g, "current_user") and g.current_user:
+        user_id = g.current_user["id"]
+    return get_user_settings(user_id)
+
+
+def save_user_settings(user_id, new_settings):
+    db = get_db()
+    for k in DEFAULT_SETTINGS:
+        if k in new_settings:
+            db.execute(
+                "INSERT OR REPLACE INTO user_settings (user_id, key, value) VALUES (?, ?, ?)",
+                (user_id, k, str(new_settings[k])),
+            )
+    db.commit()
 
 
 def save_settings(new_settings):
@@ -90,7 +134,7 @@ def save_settings(new_settings):
 
 
 def migrate(db_path):
-    """catalog_photos.py's schema has no marked_for_removal column -- add it once, if missing."""
+    """Ensure database schema is up-to-date with auth, settings, and audit tables."""
     conn = sqlite3.connect(db_path)
     cols = [row[1] for row in conn.execute("PRAGMA table_info(photos)")]
     if "marked_for_removal" not in cols:
@@ -103,8 +147,109 @@ def migrate(db_path):
             value TEXT NOT NULL
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            access_level INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_login TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (user_id, key)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+            photo_filename TEXT,
+            details TEXT
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_photo ON audit_log(photo_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(timestamp DESC)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS tag_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_name TEXT UNIQUE NOT NULL,
+            min_access_level INTEGER NOT NULL DEFAULT 1,
+            restricted_to_role TEXT
+        )"""
+    )
     conn.commit()
     conn.close()
+
+
+# --------------------------------------------------------------------------
+# Authentication & Audit Logging
+# --------------------------------------------------------------------------
+
+def get_current_user():
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    db = get_db()
+    row = db.execute(
+        "SELECT id, username, role, access_level, created_at, last_login FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        session.pop("user_id", None)
+        return None
+    return dict(row)
+
+
+@app.before_request
+def require_login():
+    g.current_user = get_current_user()
+    if request.endpoint in ("login", "logout", "static") or request.path.startswith("/static/"):
+        return
+    if not g.current_user:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Unauthorized", "login_required": True}), 401
+        return redirect(url_for("login", next=request.full_path if request.method == "GET" else url_for("index")))
+
+
+@app.context_processor
+def inject_globals():
+    user = getattr(g, "current_user", None)
+    settings = get_settings(user["id"] if user else None)
+    return {
+        "current_user": user,
+        "current_settings": settings,
+    }
+
+
+def record_audit(action, photo_id=None, details=None):
+    user = getattr(g, "current_user", None)
+    user_id = user["id"] if user else None
+    username = user["username"] if user else "system"
+    db = get_db()
+    filename = None
+    if photo_id:
+        row = db.execute("SELECT filename FROM photos WHERE id = ?", (photo_id,)).fetchone()
+        if row:
+            filename = row["filename"]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    details_str = details if isinstance(details, str) else json.dumps(details) if details else None
+    db.execute(
+        """INSERT INTO audit_log (timestamp, user_id, username, action, photo_id, photo_filename, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (now, user_id, username, action, photo_id, filename, details_str),
+    )
+    db.commit()
 
 
 @app.template_filter("filesize")
@@ -311,18 +456,29 @@ def toggle_removal(photo_id):
     new_value = 0 if row["marked_for_removal"] else 1
     db.execute("UPDATE photos SET marked_for_removal = ? WHERE id = ?", (new_value, photo_id))
     db.commit()
+    record_audit(
+        "mark_removal" if new_value else "unmark_removal",
+        photo_id=photo_id,
+        details={"marked_for_removal": bool(new_value)},
+    )
     return jsonify({"marked_for_removal": bool(new_value)})
 
 
 @app.route("/api/photo/<int:photo_id>/description", methods=["POST"])
 def update_description(photo_id):
     db = get_db()
-    if db.execute("SELECT id FROM photos WHERE id = ?", (photo_id,)).fetchone() is None:
+    old_row = db.execute("SELECT id, description FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    if old_row is None:
         abort(404)
     data = request.get_json(force=True, silent=True) or {}
     description = str(data.get("description", "")).strip()
     db.execute("UPDATE photos SET description = ? WHERE id = ?", (description, photo_id))
     db.commit()
+    record_audit(
+        "edit_description",
+        photo_id=photo_id,
+        details={"previous": old_row["description"] or "", "new": description},
+    )
     return jsonify({"description": description})
 
 
@@ -340,15 +496,167 @@ def add_tag(photo_id):
     tag_id = db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
     db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", (photo_id, tag_id))
     db.commit()
+    record_audit("add_tag", photo_id=photo_id, details={"tag": name})
     return jsonify({"id": tag_id, "name": name})
 
 
 @app.route("/api/photo/<int:photo_id>/tags/<int:tag_id>", methods=["DELETE"])
 def remove_tag(photo_id, tag_id):
     db = get_db()
+    tag_row = db.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    tag_name = tag_row["name"] if tag_row else str(tag_id)
     db.execute("DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?", (photo_id, tag_id))
     db.commit()
+    record_audit("remove_tag", photo_id=photo_id, details={"tag": tag_name})
     return jsonify({"removed": True})
+
+
+# --------------------------------------------------------------------------
+# Settings Routes
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Authentication Routes
+# --------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if g.current_user:
+        return redirect(url_for("index"))
+    error = None
+    next_url = request.args.get("next") or request.form.get("next") or url_for("index")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = url_for("index")
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        db = get_db()
+        user = db.execute(
+            "SELECT id, username, password_hash, role FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if user and check_password_hash(user["password_hash"], password):
+            session["user_id"] = user["id"]
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+            db.commit()
+            return redirect(next_url)
+        else:
+            error = "Invalid username or password."
+
+    return render_template("login.html", error=error, next=next_url)
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user_id", None)
+    return redirect(url_for("login"))
+
+
+# --------------------------------------------------------------------------
+# Audit Routes
+# --------------------------------------------------------------------------
+
+@app.route("/audit")
+def audit_view():
+    db = get_db()
+    page = max(1, request.args.get("page", 1, type=int))
+    user_filter = request.args.get("user", "").strip()
+    action_filter = request.args.get("action", "").strip()
+    per_page = 50
+
+    where, params = [], []
+    if user_filter:
+        where.append("username = ?")
+        params.append(user_filter)
+    if action_filter:
+        where.append("action = ?")
+        params.append(action_filter)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    total = db.execute(f"SELECT COUNT(*) FROM audit_log {where_sql}", params).fetchone()[0]
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+
+    rows = db.execute(
+        f"""SELECT id, timestamp, user_id, username, action, photo_id, photo_filename, details
+            FROM audit_log {where_sql}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?""",
+        params + [per_page, offset],
+    ).fetchall()
+
+    all_users = [r[0] for r in db.execute("SELECT DISTINCT username FROM audit_log ORDER BY username").fetchall()]
+    all_actions = [r[0] for r in db.execute("SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()]
+
+    return render_template(
+        "audit.html",
+        logs=rows,
+        page=page,
+        total_pages=total_pages,
+        total=total,
+        user_filter=user_filter,
+        action_filter=action_filter,
+        all_users=all_users,
+        all_actions=all_actions,
+    )
+
+
+# --------------------------------------------------------------------------
+# Admin User Management Routes
+# --------------------------------------------------------------------------
+
+@app.route("/admin/users/create", methods=["POST"])
+def admin_create_user():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    role = request.form.get("role", "user").strip()
+    if role not in ("admin", "user"):
+        role = "user"
+
+    if not username or not password:
+        flash("Username and password are required.", "error")
+        return redirect(url_for("settings_page"))
+
+    db = get_db()
+    existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        flash(f"User '{username}' already exists.", "error")
+        return redirect(url_for("settings_page"))
+
+    p_hash = generate_password_hash(password)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+        (username, p_hash, role, now),
+    )
+    db.commit()
+    record_audit("create_user", details={"created_username": username, "role": role})
+    flash(f"User '{username}' ({role}) created successfully.", "success")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
+def admin_delete_user(user_id):
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    if user_id == g.current_user["id"]:
+        flash("You cannot delete your own account.", "error")
+        return redirect(url_for("settings_page"))
+
+    db = get_db()
+    user = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+    if user:
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        db.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        db.commit()
+        record_audit("delete_user", details={"deleted_username": user["username"]})
+        flash(f"User '{user['username']}' deleted.", "success")
+    return redirect(url_for("settings_page"))
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +667,8 @@ def remove_tag(photo_id, tag_id):
 def settings_page():
     message = None
     msg_type = "success"
+    user_id = g.current_user["id"] if g.current_user else None
+
     if request.method == "POST":
         new_settings = {
             "all_tags_count": "1" if request.form.get("all_tags_count") == "1" else "0",
@@ -369,12 +679,23 @@ def settings_page():
         }
         if new_settings["per_page"] not in ("10", "20", "30", "50"):
             new_settings["per_page"] = "50"
-        save_settings(new_settings)
+        if user_id:
+            save_user_settings(user_id, new_settings)
+        else:
+            save_settings(new_settings)
         message = "Settings saved successfully."
 
-    settings = get_settings()
+    settings = get_settings(user_id)
+    db = get_db()
     current_db = Path(DB_PATH).name
     other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
+
+    user_list = []
+    if g.current_user and g.current_user["role"] == "admin":
+        user_list = db.execute(
+            "SELECT id, username, role, access_level, created_at, last_login FROM users ORDER BY username"
+        ).fetchall()
+
     return render_template(
         "settings.html",
         settings=settings,
@@ -382,6 +703,7 @@ def settings_page():
         current_db=current_db,
         message=message,
         msg_type=msg_type,
+        user_list=user_list,
     )
 
 
@@ -396,6 +718,7 @@ def settings_export():
 @app.route("/settings/import-json", methods=["POST"])
 def settings_import_json():
     file = request.files.get("settings_file")
+    user_id = g.current_user["id"] if g.current_user else None
     current_db = Path(DB_PATH).name
     other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
     if not file or not file.filename:
@@ -403,10 +726,13 @@ def settings_import_json():
     try:
         data = json.load(file)
         if isinstance(data, dict):
-            save_settings(data)
+            if user_id:
+                save_user_settings(user_id, data)
+            else:
+                save_settings(data)
             return render_template(
                 "settings.html",
-                settings=get_settings(),
+                settings=get_settings(user_id),
                 other_dbs=other_dbs,
                 current_db=current_db,
                 message="Successfully imported settings from JSON file.",
@@ -417,7 +743,7 @@ def settings_import_json():
     except Exception as e:
         return render_template(
             "settings.html",
-            settings=get_settings(),
+            settings=get_settings(user_id),
             other_dbs=other_dbs,
             current_db=current_db,
             message=f"Failed to import settings: {e}",
@@ -429,13 +755,14 @@ def settings_import_json():
 def settings_import_db():
     source_db_name = request.form.get("source_db", "").strip()
     source_path = Path(source_db_name)
+    user_id = g.current_user["id"] if g.current_user else None
     current_db = Path(DB_PATH).name
     other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
 
     if not source_path.is_file() or source_db_name == current_db or source_path.suffix != ".db":
         return render_template(
             "settings.html",
-            settings=get_settings(),
+            settings=get_settings(user_id),
             other_dbs=other_dbs,
             current_db=current_db,
             message="Invalid source database selected.",
@@ -452,7 +779,7 @@ def settings_import_db():
             conn.close()
             return render_template(
                 "settings.html",
-                settings=get_settings(),
+                settings=get_settings(user_id),
                 other_dbs=other_dbs,
                 current_db=current_db,
                 message=f"No settings table found in '{source_db_name}'.",
@@ -462,7 +789,10 @@ def settings_import_db():
         imported = {row["key"]: row["value"] for row in rows}
         conn.close()
         if imported:
-            save_settings(imported)
+            if user_id:
+                save_user_settings(user_id, imported)
+            else:
+                save_settings(imported)
             msg = f"Successfully copied {len(imported)} settings from '{source_db_name}'."
             m_type = "success"
         else:
@@ -471,7 +801,7 @@ def settings_import_db():
     except Exception as e:
         return render_template(
             "settings.html",
-            settings=get_settings(),
+            settings=get_settings(user_id),
             other_dbs=other_dbs,
             current_db=current_db,
             message=f"Error reading '{source_db_name}': {e}",
@@ -480,12 +810,128 @@ def settings_import_db():
 
     return render_template(
         "settings.html",
-        settings=get_settings(),
+        settings=get_settings(user_id),
         other_dbs=other_dbs,
         current_db=current_db,
         message=msg,
         msg_type=m_type,
     )
+
+
+# --------------------------------------------------------------------------
+# CLI Management Commands
+# --------------------------------------------------------------------------
+
+def cli_create_admin(db_path, username, password=None):
+    migrate(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        print(f"Error: User '{username}' already exists.")
+        conn.close()
+        return 1
+    if not password:
+        password = getpass.getpass(f"Enter password for admin '{username}': ")
+        password_confirm = getpass.getpass("Confirm password: ")
+        if password != password_confirm:
+            print("Error: Passwords do not match.")
+            conn.close()
+            return 1
+    if not password.strip():
+        print("Error: Password cannot be empty.")
+        conn.close()
+        return 1
+    p_hash = generate_password_hash(password)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO users (username, password_hash, role, access_level, created_at) VALUES (?, ?, 'admin', 99, ?)",
+        (username, p_hash, now),
+    )
+    conn.commit()
+    conn.close()
+    print(f"Admin user '{username}' created successfully!")
+    return 0
+
+
+def cli_create_user(db_path, username, role="user", password=None):
+    migrate(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        print(f"Error: User '{username}' already exists.")
+        conn.close()
+        return 1
+    if not password:
+        password = getpass.getpass(f"Enter password for user '{username}': ")
+        password_confirm = getpass.getpass("Confirm password: ")
+        if password != password_confirm:
+            print("Error: Passwords do not match.")
+            conn.close()
+            return 1
+    if not password.strip():
+        print("Error: Password cannot be empty.")
+        conn.close()
+        return 1
+    p_hash = generate_password_hash(password)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO users (username, password_hash, role, access_level, created_at) VALUES (?, ?, ?, 1, ?)",
+        (username, p_hash, role, now),
+    )
+    conn.commit()
+    conn.close()
+    print(f"User '{username}' ({role}) created successfully!")
+    return 0
+
+
+def cli_reset_password(db_path, username, password=None):
+    migrate(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if not existing:
+        print(f"Error: User '{username}' not found.")
+        conn.close()
+        return 1
+    if not password:
+        password = getpass.getpass(f"Enter new password for '{username}': ")
+        password_confirm = getpass.getpass("Confirm new password: ")
+        if password != password_confirm:
+            print("Error: Passwords do not match.")
+            conn.close()
+            return 1
+    if not password.strip():
+        print("Error: Password cannot be empty.")
+        conn.close()
+        return 1
+    p_hash = generate_password_hash(password)
+    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (p_hash, existing["id"]))
+    conn.commit()
+    conn.close()
+    print(f"Password for user '{username}' updated successfully!")
+    return 0
+
+
+def cli_list_users(db_path):
+    migrate(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, username, role, access_level, created_at, last_login FROM users ORDER BY id"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        print("No users found in database.")
+        return 0
+    print(f"{'ID':<4} {'Username':<18} {'Role':<8} {'Level':<6} {'Created At':<20} {'Last Login':<20}")
+    print("-" * 78)
+    for r in rows:
+        created = r["created_at"] or ""
+        last = r["last_login"] or "Never"
+        print(f"{r['id']:<4} {r['username']:<18} {r['role']:<8} {r['access_level']:<6} {created:<20} {last:<20}")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -496,12 +942,32 @@ def main():
     parser.add_argument("--db", default="photos.db", help="Path to photos.db (default: photos.db)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0, reachable on your LAN)")
     parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
+
+    # User management CLI options
+    parser.add_argument("--create-admin", metavar="USERNAME", help="Create an admin user via CLI")
+    parser.add_argument("--create-user", metavar="USERNAME", help="Create a standard user via CLI")
+    parser.add_argument("--role", default="user", choices=["user", "admin"], help="Role for --create-user (default: user)")
+    parser.add_argument("--password", metavar="PASSWORD", help="Password for user creation/reset (optional; if omitted, prompts securely)")
+    parser.add_argument("--reset-password", metavar="USERNAME", help="Reset password for an existing user")
+    parser.add_argument("--list-users", action="store_true", help="List all registered users")
+
     args = parser.parse_args()
 
     if not Path(args.db).is_file():
         raise SystemExit(f"Database not found: {args.db}")
 
     DB_PATH = args.db
+
+    # Handle CLI subcommands if specified
+    if args.create_admin:
+        sys.exit(cli_create_admin(DB_PATH, args.create_admin, args.password))
+    if args.create_user:
+        sys.exit(cli_create_user(DB_PATH, args.create_user, args.role, args.password))
+    if args.reset_password:
+        sys.exit(cli_reset_password(DB_PATH, args.reset_password, args.password))
+    if args.list_users:
+        sys.exit(cli_list_users(DB_PATH))
+
     migrate(DB_PATH)
     app.run(host=args.host, port=args.port, threaded=True, debug=False)
 

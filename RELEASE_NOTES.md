@@ -1,6 +1,89 @@
 # Release Notes
 
+## Release - October 10, 2026: Phase 1 - Authentication, Authorization, Per-User Settings & Activity Auditing
+
+### Overview
+This release implements Phase 1 of the identity and security architecture. It adds mandatory authentication across all catalog pages, media routes, and API endpoints, introduces CLI tools for bootstrap administration, per-user configuration isolation, a full activity audit log for tracking catalog changes, and an admin-only user management interface.
+
+---
+
+### New Features & Enhancements
+
+#### 1. Mandatory Identity & Authentication
+- **Universal Route Guard**: All web routes, photo/thumbnail serving endpoints, and REST API endpoints now enforce authentication via a `before_request` hook.
+- **Login Flow**: Unauthenticated web visitors are redirected to `/login` with safe `next` parameter redirection. Unauthenticated API calls return HTTP `401 Unauthorized`.
+- **Session Security**: Session tokens are signed using persistent secret keys stored in `.secret_key` (excluded from git).
+- **Password Security**: Passwords are cryptographically salted and hashed using Werkzeug (`scrypt`/`pbkdf2:sha256`).
+- **User Navigation**: All pages now display a header user pill showing the active username, an `admin` role badge (if applicable), links to the Settings and Audit Log, and a Logout button.
+
+#### 2. Command-Line Administration (CLI)
+- **Bootstrap Admin Creation**: Provision the initial administrator account directly from the command line:
+  ```bash
+  python3 app.py --db photos.db --create-admin <username>
+  ```
+- **CLI User Management Subcommands**:
+  - `--create-user <username> [--role user|admin]`
+  - `--reset-password <username>`
+  - `--list-users`
+- Interactive password prompts with confirmation when `--password` is omitted.
+
+#### 3. Administrative User Management Interface
+- **Admin Panel in Settings**: Administrators have access to an integrated user management section on the `/settings` page.
+- **Account Creation**: Create new users and designate roles (`user` or `admin`) directly from the web interface.
+- **User Directory**: View all registered users, roles, account creation dates, and last login timestamps.
+- **Account Deletion**: Administrators can remove users with built-in safeguards preventing self-deletion.
+- **Access Control**: Non-administrative users attempting to access user creation or deletion endpoints are rejected with HTTP `403 Forbidden`.
+
+#### 4. Per-User Configuration Settings
+- **Isolated User Settings**: Configuration options (tag count display, straight column alignment, zero-count tag hiding, per-page photo count, and Dark Mode) are now saved independently per user in the `user_settings` table.
+- **Global Fallback**: If a user hasn't explicitly customized a setting, the application smoothly falls back to the server's global defaults.
+- **Personal Dark Mode**: Dark Mode preference is bound to individual user accounts rather than server-wide.
+
+#### 5. Activity Auditing & Change History (`/audit`)
+- **Mutation Tracking**: Every catalog modification records an immutable log entry in `audit_log`:
+  - Marking / unmarking photos for removal
+  - Adding or removing photo tags
+  - Editing photo descriptions
+  - User creation and deletion actions
+- **Audit Detail**: Records store the timestamp, user ID, username, action type, affected photo ID, filename, and JSON metadata detailing what changed.
+- **Dedicated Audit Viewer**: A responsive `/audit` page accessible to all authenticated users:
+  - Filter history by user or by action type.
+  - Color-coded badges for different action categories (`mark_removal`, `add_tag`, `edit_description`, etc.).
+  - Chronological pagination with direct photo links.
+- **Shared Catalog Integrity**: Catalog updates made by any user remain shared and immediately visible to all users.
+
+---
+
+### Files Modified & Created
+
+- **`app.py`**:
+  - Added database migrations for `users`, `user_settings`, `audit_log`, and `tag_permissions` tables.
+  - Implemented persistent Flask `secret_key` loader.
+  - Added CLI flags and handler functions (`cli_create_admin`, `cli_create_user`, `cli_reset_password`, `cli_list_users`).
+  - Added `before_request` auth hook, template context processor, `/login`, `/logout`, `/audit`, and `/admin/users/*` routes.
+  - Implemented `get_user_settings()` and `save_user_settings()` with fallback to global settings.
+  - Added `record_audit()` logging calls to photo mutation API endpoints.
+- **`AUTH_AND_AUDIT_PLAN.md`** *(New)*:
+  - Complete architectural blueprint covering threat model, schema migrations, phased roadmap, and verification steps.
+- **`templates/login.html`** *(New)*:
+  - Clean login form supporting return redirect and theme integration.
+- **`templates/audit.html`** *(New)*:
+  - Filterable activity audit history table with pagination and action badges.
+- **`templates/index.html`**:
+  - Added user pill, Audit Log navigation link, and Logout button to header.
+- **`templates/settings.html`**:
+  - Added user pill, Audit Log link, and Admin User Management card.
+- **`static/style.css`**:
+  - Added styling for login page, user status pill, audit table, action badges, admin user creation form, and dark mode variants.
+- **`.gitignore`**:
+  - Excluded `.secret_key`, `__pycache__/`, `*.pyc`, and database backup files.
+- **`RELEASE_NOTES.md`**:
+  - Updated documentation with October 10, 2026 Phase 1 release details.
+
+---
+
 ## Release - October 9, 2026
+
 
 ### Overview
 This release introduces user-configurable settings, full Dark Mode support, tag count metrics in the gallery filter dropdown, active photo count filtering, dynamic pagination, and cross-database configuration transfer tools.

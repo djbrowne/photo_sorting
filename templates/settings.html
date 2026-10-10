@@ -13,6 +13,14 @@
     <h1>Settings</h1>
     <div class="header-stats">
       <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Catalog</a>
+      <a href="{{ url_for('audit_view') }}" class="header-nav-link" title="Activity History">Audit Log</a>
+      {% if current_user %}
+      <span class="user-pill" title="Logged in as {{ current_user.username }}">
+        <span class="user-pill-name">{{ current_user.username }}</span>
+        {% if current_user.role == 'admin' %}<span class="user-pill-badge">admin</span>{% endif %}
+      </span>
+      <a href="{{ url_for('logout') }}" class="btn btn-secondary btn-sm" title="Sign Out">Logout</a>
+      {% endif %}
     </div>
   </div>
 </header>
@@ -124,6 +132,79 @@
       </div>
     </div>
   </div>
+
+  {% if current_user and current_user.role == 'admin' %}
+  <div class="settings-card admin-card">
+    <h2>User Management (Admin)</h2>
+    <p class="field-help">Only administrators can add or manage user accounts.</p>
+
+    <div class="admin-user-create">
+      <h3>Create New User</h3>
+      <form method="post" action="{{ url_for('admin_create_user') }}" class="user-create-form">
+        <div class="user-create-grid">
+          <div class="form-row">
+            <label class="form-label" for="new_username">Username</label>
+            <input type="text" id="new_username" name="username" required placeholder="username" class="form-input">
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="new_password">Password</label>
+            <input type="password" id="new_password" name="password" required placeholder="password" class="form-input">
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="new_role">Role</label>
+            <select id="new_role" name="role">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div class="form-row btn-align">
+            <button type="submit" class="btn btn-primary">Create User</button>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <div class="admin-user-list">
+      <h3>Registered Users</h3>
+      {% if user_list %}
+      <div class="audit-table-wrap">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Created</th>
+              <th>Last Login</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in user_list %}
+            <tr>
+              <td>{{ u['id'] }}</td>
+              <td><strong>{{ u['username'] }}</strong></td>
+              <td><span class="user-role-badge role-{{ u['role'] }}">{{ u['role'] }}</span></td>
+              <td>{{ u['created_at'] or '&mdash;' }}</td>
+              <td>{{ u['last_login'] or 'Never' }}</td>
+              <td>
+                {% if u['id'] != current_user['id'] %}
+                <form method="post" action="{{ url_for('admin_delete_user', user_id=u['id']) }}" onsubmit="return confirm('Are you sure you want to delete user {{ u['username'] }}?');" class="inline-delete-form">
+                  <button type="submit" class="btn-delete" title="Delete User">&times; Delete</button>
+                </form>
+                {% else %}
+                <span class="muted-note">(You)</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 </main>
 
 </body>
