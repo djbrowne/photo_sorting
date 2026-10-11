@@ -329,6 +329,11 @@ h1 { margin: 0; font-size: 1.4rem; }
   color: #991b1b;
   border: 1px solid #fecaca;
 }
+.alert-warning {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
 .transfer-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -547,9 +552,14 @@ body.dark .alert-error {
   color: #fecaca;
   border-color: #b91c1c;
 }
+body.dark .alert-warning {
+  background: #451a03;
+  color: #fde047;
+  border-color: #78350f;
+}
 
 /* -------------------------------------------------------------------------- */
-/* Login Screen                                                               */
+/* Login Screen & Locked Screen                                               */
 /* -------------------------------------------------------------------------- */
 
 .login-body {
@@ -562,6 +572,9 @@ body.dark .alert-error {
 .login-wrapper {
   width: 100%;
   max-width: 380px;
+}
+.locked-card {
+  max-width: 440px;
 }
 .login-card {
   background: #fff;

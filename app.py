@@ -30,6 +30,7 @@ import json
 import secrets
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,14 +79,18 @@ DEFAULT_SETTINGS = {
 }
 
 
+DB_TIMEOUT = 15.0  # seconds to wait for database locks before raising OperationalError
+
+
 # --------------------------------------------------------------------------
 # Database & Settings
 # --------------------------------------------------------------------------
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        g.db = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
         g.db.row_factory = sqlite3.Row
+        g.db.execute(f"PRAGMA busy_timeout = {int(DB_TIMEOUT * 1000)}")
         g.db.execute("PRAGMA foreign_keys = ON")
     return g.db
 
@@ -97,15 +102,32 @@ def close_db(exception=None):
         db.close()
 
 
+def db_write_with_retry(fn, max_retries=3, delay=0.25):
+    """Execute a database write function, retrying if the database is locked."""
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if ("locked" in str(e).lower() or "busy" in str(e).lower()) and attempt < max_retries - 1:
+                time.sleep(delay * (2 ** attempt))
+                continue
+            raise
+
+
 def get_user_settings(user_id=None):
-    db = get_db()
-    s = dict(DEFAULT_SETTINGS)
-    for row in db.execute("SELECT key, value FROM settings"):
-        s[row["key"]] = row["value"]
-    if user_id:
-        for row in db.execute("SELECT key, value FROM user_settings WHERE user_id = ?", (user_id,)):
+    try:
+        db = get_db()
+        s = dict(DEFAULT_SETTINGS)
+        for row in db.execute("SELECT key, value FROM settings"):
             s[row["key"]] = row["value"]
-    return s
+        if user_id:
+            for row in db.execute("SELECT key, value FROM user_settings WHERE user_id = ?", (user_id,)):
+                s[row["key"]] = row["value"]
+        return s
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            return dict(DEFAULT_SETTINGS)
+        raise
 
 
 def get_settings(user_id=None):
@@ -115,27 +137,32 @@ def get_settings(user_id=None):
 
 
 def save_user_settings(user_id, new_settings):
-    db = get_db()
-    for k in DEFAULT_SETTINGS:
-        if k in new_settings:
-            db.execute(
-                "INSERT OR REPLACE INTO user_settings (user_id, key, value) VALUES (?, ?, ?)",
-                (user_id, k, str(new_settings[k])),
-            )
-    db.commit()
+    def _save():
+        db = get_db()
+        for k in DEFAULT_SETTINGS:
+            if k in new_settings:
+                db.execute(
+                    "INSERT OR REPLACE INTO user_settings (user_id, key, value) VALUES (?, ?, ?)",
+                    (user_id, k, str(new_settings[k])),
+                )
+        db.commit()
+    db_write_with_retry(_save)
 
 
 def save_settings(new_settings):
-    db = get_db()
-    for k in DEFAULT_SETTINGS:
-        if k in new_settings:
-            db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(new_settings[k])))
-    db.commit()
+    def _save():
+        db = get_db()
+        for k in DEFAULT_SETTINGS:
+            if k in new_settings:
+                db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(new_settings[k])))
+        db.commit()
+    db_write_with_retry(_save)
 
 
 def migrate(db_path):
     """Ensure database schema is up-to-date with auth, settings, and audit tables."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=15.0)
+    conn.execute("PRAGMA busy_timeout = 15000")
     cols = [row[1] for row in conn.execute("PRAGMA table_info(photos)")]
     if "marked_for_removal" not in cols:
         conn.execute("ALTER TABLE photos ADD COLUMN marked_for_removal INTEGER NOT NULL DEFAULT 0")
@@ -200,15 +227,25 @@ def get_current_user():
     user_id = session.get("user_id")
     if not user_id:
         return None
-    db = get_db()
-    row = db.execute(
-        "SELECT id, username, role, access_level, created_at, last_login FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    if not row:
-        session.pop("user_id", None)
-        return None
-    return dict(row)
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT id, username, role, access_level, created_at, last_login FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            session.pop("user_id", None)
+            return None
+        return dict(row)
+    except sqlite3.OperationalError as e:
+        if ("locked" in str(e).lower() or "busy" in str(e).lower()) and session.get("username"):
+            return {
+                "id": user_id,
+                "username": session.get("username", "user"),
+                "role": session.get("role", "user"),
+                "access_level": session.get("access_level", 1),
+            }
+        raise
 
 
 @app.before_request
@@ -225,7 +262,10 @@ def require_login():
 @app.context_processor
 def inject_globals():
     user = getattr(g, "current_user", None)
-    settings = get_settings(user["id"] if user else None)
+    try:
+        settings = get_settings(user["id"] if user else None)
+    except Exception:
+        settings = DEFAULT_SETTINGS
     return {
         "current_user": user,
         "current_settings": settings,
@@ -233,23 +273,90 @@ def inject_globals():
 
 
 def record_audit(action, photo_id=None, details=None):
-    user = getattr(g, "current_user", None)
-    user_id = user["id"] if user else None
-    username = user["username"] if user else "system"
-    db = get_db()
-    filename = None
-    if photo_id:
-        row = db.execute("SELECT filename FROM photos WHERE id = ?", (photo_id,)).fetchone()
-        if row:
-            filename = row["filename"]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    details_str = details if isinstance(details, str) else json.dumps(details) if details else None
-    db.execute(
-        """INSERT INTO audit_log (timestamp, user_id, username, action, photo_id, photo_filename, details)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (now, user_id, username, action, photo_id, filename, details_str),
+    def _record():
+        user = getattr(g, "current_user", None)
+        user_id = user["id"] if user else None
+        username = user["username"] if user else "system"
+        db = get_db()
+        filename = None
+        if photo_id:
+            row = db.execute("SELECT filename FROM photos WHERE id = ?", (photo_id,)).fetchone()
+            if row:
+                filename = row["filename"]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        details_str = details if isinstance(details, str) else json.dumps(details) if details else None
+        db.execute(
+            """INSERT INTO audit_log (timestamp, user_id, username, action, photo_id, photo_filename, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (now, user_id, username, action, photo_id, filename, details_str),
+        )
+        db.commit()
+
+    try:
+        db_write_with_retry(_record, max_retries=3, delay=0.2)
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            print(f"Warning: could not record audit log entry ({action}) due to database lock: {e}", file=sys.stderr)
+        else:
+            raise
+
+
+@app.errorhandler(sqlite3.OperationalError)
+def handle_db_operational_error(e):
+    error_msg = str(e).lower()
+    is_locked = "locked" in error_msg or "busy" in error_msg
+
+    # Determine if API / AJAX or browser page request
+    is_api = (
+        request.path.startswith("/api/")
+        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or request.accept_mimetypes.best == "application/json"
     )
-    db.commit()
+
+    if is_api:
+        msg = (
+            "The database is temporarily locked by another process. Please wait a moment and try again."
+            if is_locked
+            else f"Database error: {e}"
+        )
+        return jsonify({"error": msg, "locked": is_locked}), 503
+
+    current_settings = DEFAULT_SETTINGS
+    try:
+        user = getattr(g, "current_user", None)
+        if user:
+            current_settings = get_settings(user["id"])
+    except Exception:
+        pass
+
+    db_name = Path(DB_PATH).name
+    try:
+        return (
+            render_template(
+                "db_locked.html",
+                db_name=db_name,
+                is_locked=is_locked,
+                error_detail=str(e),
+                current_settings=current_settings,
+                settings=current_settings,
+            ),
+            503,
+        )
+    except Exception:
+        return (
+            f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="5">
+<title>Database Temporarily Busy</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:50px;background:#f8fafc;color:#1e293b;}}
+.card{{max-width:500px;margin:auto;padding:30px;background:white;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);}}
+button{{padding:10px 20px;font-size:16px;background:#2b6cb0;color:white;border:none;border-radius:6px;cursor:pointer;margin-top:15px;}}</style>
+</head><body><div class="card">
+<div style="font-size:40px;margin-bottom:10px;">⏳</div>
+<h2>Database Temporarily Busy</h2>
+<p>The database (<code>{db_name}</code>) is currently locked by another operation. Retrying automatically in 5 seconds...</p>
+<button onclick="window.location.reload()">Retry Now</button>
+</div></body></html>""",
+            503,
+        )
 
 
 @app.template_filter("filesize")
@@ -449,13 +556,17 @@ def _placeholder_path():
 
 @app.route("/api/photo/<int:photo_id>/toggle-removal", methods=["POST"])
 def toggle_removal(photo_id):
-    db = get_db()
-    row = db.execute("SELECT marked_for_removal FROM photos WHERE id = ?", (photo_id,)).fetchone()
-    if row is None:
-        abort(404)
-    new_value = 0 if row["marked_for_removal"] else 1
-    db.execute("UPDATE photos SET marked_for_removal = ? WHERE id = ?", (new_value, photo_id))
-    db.commit()
+    def _toggle():
+        db = get_db()
+        row = db.execute("SELECT marked_for_removal FROM photos WHERE id = ?", (photo_id,)).fetchone()
+        if row is None:
+            abort(404)
+        new_value = 0 if row["marked_for_removal"] else 1
+        db.execute("UPDATE photos SET marked_for_removal = ? WHERE id = ?", (new_value, photo_id))
+        db.commit()
+        return new_value
+
+    new_value = db_write_with_retry(_toggle)
     record_audit(
         "mark_removal" if new_value else "unmark_removal",
         photo_id=photo_id,
@@ -466,36 +577,45 @@ def toggle_removal(photo_id):
 
 @app.route("/api/photo/<int:photo_id>/description", methods=["POST"])
 def update_description(photo_id):
-    db = get_db()
-    old_row = db.execute("SELECT id, description FROM photos WHERE id = ?", (photo_id,)).fetchone()
-    if old_row is None:
-        abort(404)
     data = request.get_json(force=True, silent=True) or {}
     description = str(data.get("description", "")).strip()
-    db.execute("UPDATE photos SET description = ? WHERE id = ?", (description, photo_id))
-    db.commit()
+
+    def _update():
+        db = get_db()
+        old_row = db.execute("SELECT id, description FROM photos WHERE id = ?", (photo_id,)).fetchone()
+        if old_row is None:
+            abort(404)
+        db.execute("UPDATE photos SET description = ? WHERE id = ?", (description, photo_id))
+        db.commit()
+        return old_row["description"] or ""
+
+    prev_desc = db_write_with_retry(_update)
     record_audit(
         "edit_description",
         photo_id=photo_id,
-        details={"previous": old_row["description"] or "", "new": description},
+        details={"previous": prev_desc, "new": description},
     )
     return jsonify({"description": description})
 
 
 @app.route("/api/photo/<int:photo_id>/tags", methods=["POST"])
 def add_tag(photo_id):
-    db = get_db()
-    if db.execute("SELECT id FROM photos WHERE id = ?", (photo_id,)).fetchone() is None:
-        abort(404)
     data = request.get_json(force=True, silent=True) or {}
     name = str(data.get("name", "")).strip().lower()
     if not name:
         return jsonify({"error": "empty tag"}), 400
 
-    db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
-    tag_id = db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
-    db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", (photo_id, tag_id))
-    db.commit()
+    def _add():
+        db = get_db()
+        if db.execute("SELECT id FROM photos WHERE id = ?", (photo_id,)).fetchone() is None:
+            abort(404)
+        db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+        tag_id = db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
+        db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", (photo_id, tag_id))
+        db.commit()
+        return tag_id
+
+    tag_id = db_write_with_retry(_add)
     record_audit("add_tag", photo_id=photo_id, details={"tag": name})
     return jsonify({"id": tag_id, "name": name})
 
@@ -505,15 +625,16 @@ def remove_tag(photo_id, tag_id):
     db = get_db()
     tag_row = db.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
     tag_name = tag_row["name"] if tag_row else str(tag_id)
-    db.execute("DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?", (photo_id, tag_id))
-    db.commit()
+
+    def _remove():
+        db = get_db()
+        db.execute("DELETE FROM photo_tags WHERE photo_id = ? AND tag_id = ?", (photo_id, tag_id))
+        db.commit()
+
+    db_write_with_retry(_remove)
     record_audit("remove_tag", photo_id=photo_id, details={"tag": tag_name})
     return jsonify({"removed": True})
 
-
-# --------------------------------------------------------------------------
-# Settings Routes
-# --------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
 # Authentication Routes
@@ -538,9 +659,14 @@ def login():
         ).fetchone()
         if user and check_password_hash(user["password_hash"], password):
             session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["role"] = user["role"]
             now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
-            db.commit()
+            try:
+                db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+                db.commit()
+            except sqlite3.OperationalError:
+                pass
             return redirect(next_url)
         else:
             error = "Invalid username or password."
@@ -630,11 +756,16 @@ def admin_create_user():
 
     p_hash = generate_password_hash(password)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    db.execute(
-        "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-        (username, p_hash, role, now),
-    )
-    db.commit()
+
+    def _create():
+        db = get_db()
+        db.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, p_hash, role, now),
+        )
+        db.commit()
+
+    db_write_with_retry(_create)
     record_audit("create_user", details={"created_username": username, "role": role})
     flash(f"User '{username}' ({role}) created successfully.", "success")
     return redirect(url_for("settings_page"))
@@ -651,9 +782,13 @@ def admin_delete_user(user_id):
     db = get_db()
     user = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
     if user:
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        db.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
-        db.commit()
+        def _delete():
+            db = get_db()
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            db.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+            db.commit()
+
+        db_write_with_retry(_delete)
         record_audit("delete_user", details={"deleted_username": user["username"]})
         flash(f"User '{user['username']}' deleted.", "success")
     return redirect(url_for("settings_page"))

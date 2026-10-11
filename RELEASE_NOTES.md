@@ -52,6 +52,14 @@ This release implements Phase 1 of the identity and security architecture. It ad
   - Chronological pagination with direct photo links.
 - **Shared Catalog Integrity**: Catalog updates made by any user remain shared and immediately visible to all users.
 
+#### 6. Database Lock Tolerance & Resilient Error Handling
+- **Lock Tolerance**: Configured `timeout=15.0` and `PRAGMA busy_timeout = 15000` on database connections, allowing SQLite up to 15 seconds to wait for file locks to clear rather than failing immediately.
+- **Automatic Retry on Writes**: Implemented `db_write_with_retry` with exponential backoff for write transactions (tag updates, descriptions, removal flags, user management, and settings).
+- **Context Fallbacks**: The template global context processor (`inject_globals`) and settings helpers catch `sqlite3.OperationalError` and safely fall back to default values without crashing.
+- **User-Friendly Error Handling**: Added a global `@app.errorhandler(sqlite3.OperationalError)`:
+  - Web browser requests render a clean, themed `templates/db_locked.html` page (HTTP 503) featuring an automatic 5-second retry countdown and "Retry Now" button rather than an unhandled 500 Internal Server Error.
+  - API and AJAX requests return HTTP 503 with structured JSON error details (`"locked": true`), parsed by `static/app.js` to inform users without crashing.
+
 ---
 
 ### Files Modified & Created
@@ -63,22 +71,27 @@ This release implements Phase 1 of the identity and security architecture. It ad
   - Added `before_request` auth hook, template context processor, `/login`, `/logout`, `/audit`, and `/admin/users/*` routes.
   - Implemented `get_user_settings()` and `save_user_settings()` with fallback to global settings.
   - Added `record_audit()` logging calls to photo mutation API endpoints.
+  - Added `PRAGMA busy_timeout = 15000`, `db_write_with_retry()`, and global `sqlite3.OperationalError` handler.
 - **`AUTH_AND_AUDIT_PLAN.md`** *(New)*:
   - Complete architectural blueprint covering threat model, schema migrations, phased roadmap, and verification steps.
 - **`templates/login.html`** *(New)*:
   - Clean login form supporting return redirect and theme integration.
 - **`templates/audit.html`** *(New)*:
   - Filterable activity audit history table with pagination and action badges.
+- **`templates/db_locked.html`** *(New)*:
+  - Dedicated 503 error screen for database lock conditions with auto-reload timer and retry button.
 - **`templates/index.html`**:
   - Added user pill, Audit Log navigation link, and Logout button to header.
 - **`templates/settings.html`**:
   - Added user pill, Audit Log link, and Admin User Management card.
+- **`static/app.js`**:
+  - Improved `api()` fetch helper to parse and report JSON error payloads from the server.
 - **`static/style.css`**:
-  - Added styling for login page, user status pill, audit table, action badges, admin user creation form, and dark mode variants.
+  - Added styling for login page, user status pill, audit table, action badges, admin user creation form, warning alerts, and dark mode variants.
 - **`.gitignore`**:
   - Excluded `.secret_key`, `__pycache__/`, `*.pyc`, and database backup files.
 - **`RELEASE_NOTES.md`**:
-  - Updated documentation with October 10, 2026 Phase 1 release details.
+  - Updated documentation with October 10, 2026 Phase 1 release details and database lock handling.
 
 ---
 

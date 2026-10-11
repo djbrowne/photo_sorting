@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Database Temporarily Busy - Photo Catalog</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script>
+  let remaining = 5;
+  function updateCountdown() {
+    remaining--;
+    const el = document.getElementById("countdown");
+    if (el) el.textContent = remaining;
+    if (remaining <= 0) {
+      window.location.reload();
+    } else {
+      setTimeout(updateCountdown, 1000);
+    }
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(updateCountdown, 1000);
+  });
+</script>
+</head>
+<body class="login-body {% if current_settings and current_settings.dark_mode == '1' %}dark{% endif %}">
+
+<div class="login-wrapper">
+  <div class="login-card locked-card">
+    <div class="login-header">
+      <div style="font-size: 2.5rem; margin-bottom: 10px;">⏳</div>
+      <h1>Database Temporarily Busy</h1>
+      <p class="login-sub">The database file is currently locked by another task.</p>
+    </div>
+
+    <div class="alert alert-warning" style="margin-bottom: 20px;">
+      <p style="margin: 0 0 8px;"><strong>Concurrent operation in progress</strong></p>
+      <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+        The SQLite database (<code>{{ db_name }}</code>) is temporarily locked, likely due to a background photo scan, tag import, or concurrent write. No data was lost.
+      </p>
+    </div>
+
+    <p style="text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 20px;">
+      Automatically retrying in <strong id="countdown">5</strong> seconds...
+    </p>
+
+    <div style="display: flex; gap: 10px; justify-content: center;">
+      <button type="button" onclick="window.location.reload()" class="btn btn-primary">Retry Now</button>
+      <a href="{{ url_for('index') }}" class="btn btn-secondary">Catalog Home</a>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
