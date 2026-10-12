@@ -1,5 +1,26 @@
 # Release Notes
 
+## Release - October 12, 2026: Configurable Visibility for Photos Marked for Removal
+
+### Overview
+This release adds a new configuration setting allowing users to hide photos that have been marked for removal from the main catalog view. Marked photos remain easily accessible whenever needed via the "marked for removal" filter.
+
+---
+
+### New Features & Enhancements
+
+#### 1. Configurable Photo Removal Display
+- **Hide Marked Photos Option**: Added `hide_marked_for_removal` to user settings and server settings defaults.
+- **Catalog Filtering**: When enabled, the general catalog view, tag filter views, and search results exclude photos marked for removal (`marked_for_removal = 0`).
+- **Always Accessible via Dedicated Filter**: Clicking the "marked for removal" counter badge or checking the "marked for removal only" filter (`?marked=1`) continues to display all marked photos, allowing users to review, edit, or unmark photos at any time.
+- **Count Synchronization**: Grid photo counts in normal browsing now align directly with the counts displayed in the tag dropdown and header statistics.
+
+#### 2. Settings Interface Integration
+- **Catalog Display Card**: Added a new "Catalog Display" section to `/settings` with a checkbox to easily toggle the `hide_marked_for_removal` preference.
+- **Full Settings Portability**: The setting is automatically included in JSON settings export/import and cross-database configuration cloning.
+
+---
+
 ## Release - October 10, 2026: Phase 1 - Authentication, Authorization, Per-User Settings & Activity Auditing
 
 ### Overview

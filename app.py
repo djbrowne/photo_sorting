@@ -76,6 +76,7 @@ DEFAULT_SETTINGS = {
     "count_style": "column",
     "dark_mode": "0",
     "per_page": "50",
+    "hide_marked_for_removal": "0",
 }
 
 
@@ -386,6 +387,7 @@ def index():
     tag_filter = request.args.get("tag", "", type=str).strip()
     marked_only = request.args.get("marked", "", type=str) == "1"
     search = request.args.get("q", "", type=str).strip()
+    hide_marked = settings.get("hide_marked_for_removal") == "1"
 
     where, params, join = [], [], ""
     if tag_filter:
@@ -394,6 +396,8 @@ def index():
         params.append(tag_filter)
     if marked_only:
         where.append("p.marked_for_removal = 1")
+    elif hide_marked:
+        where.append("p.marked_for_removal = 0")
     if search:
         where.append("p.description LIKE ?")
         params.append(f"%{search}%")
@@ -811,6 +815,7 @@ def settings_page():
             "count_style": "parens" if request.form.get("count_style") == "parens" else "column",
             "dark_mode": "1" if request.form.get("dark_mode") == "1" else "0",
             "per_page": request.form.get("per_page", "50"),
+            "hide_marked_for_removal": "1" if request.form.get("hide_marked_for_removal") == "1" else "0",
         }
         if new_settings["per_page"] not in ("10", "20", "30", "50"):
             new_settings["per_page"] = "50"
