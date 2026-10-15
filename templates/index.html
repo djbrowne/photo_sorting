@@ -59,8 +59,8 @@
   {% for p in photos %}
   <div class="card {% if p['marked_for_removal'] %}marked{% endif %}" data-photo-id="{{ p['id'] }}">
 
-    <a href="{{ url_for('image', photo_id=p['id']) }}" target="_blank" title="Open full image">
-      <img class="thumb" src="{{ url_for('thumb', photo_id=p['id']) }}" loading="lazy" alt="{{ p['filename'] }}">
+    <a href="{{ url_for('image', photo_id=p['id']) }}" target="_blank" title="{{ p['filepath'] }}">
+      <img class="thumb" src="{{ url_for('thumb', photo_id=p['id']) }}" loading="lazy" alt="{{ p['filepath'] }}" title="{{ p['filepath'] }}">
     </a>
 
     <div class="filename" title="{{ p['filepath'] }}">{{ p['filename'] }}</div>
