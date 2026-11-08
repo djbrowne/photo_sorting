@@ -877,3 +877,205 @@ body.dark .admin-user-create {
 body.dark .role-admin { background: #1e3a8a; color: #93c5fd; }
 body.dark .role-user { background: #334155; color: #cbd5e1; }
 
+/* Origin Badges */
+.origin-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.origin-badge.origin-a {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+.origin-badge.origin-b {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+.origin-badge.origin-both {
+  background-color: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+.origin-badge.origin-merged, .origin-badge.origin-post_merge {
+  background-color: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+body.dark .origin-badge.origin-a { background-color: #082f49; color: #7dd3fc; border-color: #0369a1; }
+body.dark .origin-badge.origin-b { background-color: #451a03; color: #fde047; border-color: #b45309; }
+body.dark .origin-badge.origin-both { background-color: #052e16; color: #86efac; border-color: #15803d; }
+body.dark .origin-badge.origin-merged, body.dark .origin-badge.origin-post_merge { background-color: #3b0764; color: #d8b4fe; border-color: #7e22ce; }
+
+/* Backup Admin Card */
+.backup-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+.backup-table th, .backup-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+}
+body.dark .backup-table th, body.dark .backup-table td {
+  border-bottom-color: #3f3f46;
+}
+
+/* Database Switcher */
+.switch-db-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+body.dark .switch-db-box {
+  background: #27272a;
+  border-color: #3f3f46;
+}
+.switch-db-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Database Merge & Unmerge Tools */
+.merge-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.analysis-results-card {
+  margin-top: 20px;
+  padding: 16px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+}
+body.dark .analysis-results-card {
+  background: #142a1f;
+  border-color: #166534;
+}
+
+.analysis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.analysis-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.btn-clear {
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  color: #64748b;
+  cursor: pointer;
+}
+body.dark .btn-clear {
+  color: #94a3b8;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.metric-box {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 10px;
+  text-align: center;
+}
+body.dark .metric-box {
+  background: #1e1e24;
+  border-color: #3f3f46;
+}
+.metric-box.highlight {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+body.dark .metric-box.highlight {
+  background: #082f49;
+  border-color: #0284c7;
+}
+.metric-num {
+  display: block;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+body.dark .metric-num {
+  color: #f8fafc;
+}
+.metric-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+body.dark .metric-label {
+  color: #94a3b8;
+}
+
+.metrics-details {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #334155;
+  background: #ffffff;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 16px;
+}
+body.dark .metrics-details {
+  background: #18181b;
+  border-color: #3f3f46;
+  color: #cbd5e1;
+}
+
+.execute-merge-form {
+  border-top: 1px solid #bbf7d0;
+  padding-top: 14px;
+}
+body.dark .execute-merge-form {
+  border-top-color: #166534;
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+
+

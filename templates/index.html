@@ -66,6 +66,9 @@
     <div class="filename" title="{{ p['filepath'] }}">{{ p['filename'] }}</div>
     <div class="submeta">
       {{ p['size_bytes'] | filesize }}{% if p['date_taken'] %} &middot; {{ p['date_taken'] }}{% endif %}
+      {% if p['origin_sources'] and p['origin_sources'] != 'ORIGINAL' %}
+        &middot; <span class="origin-badge origin-{{ p['origin_sources'] | lower }}" title="Catalog origin: {{ p['origin_sources'] }}">DB: {{ p['origin_sources'] }}</span>
+      {% endif %}
     </div>
 
     {% if p['status'] == 'error' %}

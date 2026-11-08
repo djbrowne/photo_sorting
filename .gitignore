@@ -6,3 +6,8 @@ thumbnails/*
 __pycache__/
 *.pyc
 *.BACKUP*
+thumbnails-OUT/
+backups/*
+backups/*.db
+*-merged.db
+*-restored*.db

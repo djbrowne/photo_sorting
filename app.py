@@ -38,6 +38,15 @@ from flask import Flask, request, jsonify, render_template, send_file, abort, g,
 from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, ImageDraw
 
+from backup_utils import DEFAULT_BACKUP_DIR, backup_database, list_backups
+from db_versioning import (
+    detect_schema_version,
+    migrate_database,
+    check_compatibility,
+    CURRENT_SCHEMA_VERSION,
+    VERSION_PROVENANCE,
+)
+
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -161,63 +170,8 @@ def save_settings(new_settings):
 
 
 def migrate(db_path):
-    """Ensure database schema is up-to-date with auth, settings, and audit tables."""
-    conn = sqlite3.connect(db_path, timeout=15.0)
-    conn.execute("PRAGMA busy_timeout = 15000")
-    cols = [row[1] for row in conn.execute("PRAGMA table_info(photos)")]
-    if "marked_for_removal" not in cols:
-        conn.execute("ALTER TABLE photos ADD COLUMN marked_for_removal INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
-        print("Migrated photos.db: added marked_for_removal column.")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'user',
-            access_level INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            last_login TEXT
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS user_settings (
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (user_id, key)
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            username TEXT NOT NULL,
-            action TEXT NOT NULL,
-            photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
-            photo_filename TEXT,
-            details TEXT
-        )"""
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_photo ON audit_log(photo_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(timestamp DESC)")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS tag_permissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tag_name TEXT UNIQUE NOT NULL,
-            min_access_level INTEGER NOT NULL DEFAULT 1,
-            restricted_to_role TEXT
-        )"""
-    )
-    conn.commit()
-    conn.close()
+    """Ensure database schema is up-to-date with auth, settings, audit tables, and versioning."""
+    migrate_database(db_path, auto_backup=True)
 
 
 # --------------------------------------------------------------------------
@@ -615,7 +569,11 @@ def add_tag(photo_id):
             abort(404)
         db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
         tag_id = db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
-        db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", (photo_id, tag_id))
+        tag_cols = [r[1] for r in db.execute("PRAGMA table_info(photo_tags)").fetchall()]
+        if "tag_origin" in tag_cols:
+            db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id, tag_origin) VALUES (?, ?, 'POST_MERGE')", (photo_id, tag_id))
+        else:
+            db.execute("INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", (photo_id, tag_id))
         db.commit()
         return tag_id
 
@@ -802,6 +760,29 @@ def admin_delete_user(user_id):
 # Settings Routes
 # --------------------------------------------------------------------------
 
+def get_available_databases():
+    """Discover all accessible .db files in project and Archive directories."""
+    candidates = {}
+    for p in Path(".").glob("*.db"):
+        if not p.name.startswith("."):
+            res = p.resolve()
+            candidates[str(res)] = {"name": p.name, "path": str(res), "location": "site"}
+    archive_dir = Path("/mnt/nfs/Archive")
+    if archive_dir.is_dir():
+        for p in archive_dir.glob("*.db"):
+            if not p.name.startswith("."):
+                res = p.resolve()
+                if str(res) not in candidates:
+                    candidates[str(res)] = {"name": p.name, "path": str(res), "location": "Archive"}
+    resolved_active = str(Path(DB_PATH).resolve())
+    result = []
+    for path_str, info in sorted(candidates.items(), key=lambda x: (x[1]["location"] != "site", x[1]["name"])):
+        info["is_active"] = (path_str == resolved_active)
+        info["label"] = f"{info['name']} ({info['location']})" if info["location"] != "site" else info["name"]
+        result.append(info)
+    return result
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     message = None
@@ -828,19 +809,41 @@ def settings_page():
     settings = get_settings(user_id)
     db = get_db()
     current_db = Path(DB_PATH).name
+    current_db_path = str(Path(DB_PATH).resolve())
+    available_dbs = get_available_databases()
     other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
 
+    db_version = detect_schema_version(db)
+    is_merged_db = (db_version >= VERSION_PROVENANCE)
+    photo_count_row = db.execute("SELECT count(*) FROM photos").fetchone()
+    db_photo_count = photo_count_row[0] if photo_count_row else 0
+
+    merge_analysis = session.get("merge_analysis")
+    merge_db_a = session.get("merge_db_a", current_db_path)
+    merge_db_b = session.get("merge_db_b", "")
+
+    backups_list = []
     user_list = []
     if g.current_user and g.current_user["role"] == "admin":
         user_list = db.execute(
             "SELECT id, username, role, access_level, created_at, last_login FROM users ORDER BY username"
         ).fetchall()
+        backups_list = list_backups(DEFAULT_BACKUP_DIR, db_name=Path(DB_PATH).stem)
 
     return render_template(
         "settings.html",
         settings=settings,
         other_dbs=other_dbs,
         current_db=current_db,
+        current_db_path=current_db_path,
+        available_dbs=available_dbs,
+        db_version=db_version,
+        is_merged_db=is_merged_db,
+        db_photo_count=db_photo_count,
+        merge_analysis=merge_analysis,
+        merge_db_a=merge_db_a,
+        merge_db_b=merge_db_b,
+        backups_list=backups_list,
         message=message,
         msg_type=msg_type,
         user_list=user_list,
@@ -956,6 +959,179 @@ def settings_import_db():
         message=msg,
         msg_type=m_type,
     )
+
+
+@app.route("/settings/backup/create", methods=["POST"])
+def settings_create_backup():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    try:
+        dest = backup_database(DB_PATH, backup_dir=DEFAULT_BACKUP_DIR)
+        record_audit("create_backup", details={"backup_file": dest.name})
+        flash(f"Backup created successfully: {dest.name}", "success")
+    except Exception as e:
+        flash(f"Backup failed: {e}", "error")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/backup/download")
+def settings_download_backup():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    record_audit("download_backup", details={"db": Path(DB_PATH).name})
+    return send_file(
+        Path(DB_PATH).resolve(),
+        as_attachment=True,
+        download_name=f"{Path(DB_PATH).stem}_snapshot.db",
+        mimetype="application/x-sqlite3",
+    )
+
+
+@app.route("/settings/backup/delete/<filename>", methods=["POST"])
+def settings_delete_backup(filename):
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    safe_name = Path(filename).name
+    target = DEFAULT_BACKUP_DIR / safe_name
+    if target.exists() and target.suffix == ".db":
+        try:
+            target.unlink()
+            record_audit("delete_backup", details={"backup_file": safe_name})
+            flash(f"Backup {safe_name} deleted.", "success")
+        except Exception as e:
+            flash(f"Failed to delete backup: {e}", "error")
+    else:
+        flash("Backup file not found.", "error")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/database/switch", methods=["POST"])
+def settings_switch_database():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    global DB_PATH
+    new_db = request.form.get("target_db", "").strip()
+    if not new_db:
+        flash("No target database specified.", "error")
+        return redirect(url_for("settings_page"))
+
+    target_path = Path(new_db).resolve()
+    if not target_path.is_file():
+        flash(f"Database file not found: {target_path}", "error")
+        return redirect(url_for("settings_page"))
+
+    prev_db = DB_PATH
+    DB_PATH = str(target_path)
+    migrate(DB_PATH)
+    record_audit("switch_database", details={"from": prev_db, "to": DB_PATH})
+    flash(f"Switched active database to: {target_path.name}", "success")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/database/analyze", methods=["POST"])
+def settings_analyze_database():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    db_a = request.form.get("db_a", "").strip()
+    db_b = request.form.get("db_b", "").strip()
+
+    if not db_a or not db_b:
+        flash("Both Catalog A and Catalog B must be selected.", "error")
+        return redirect(url_for("settings_page"))
+
+    path_a = Path(db_a).resolve()
+    path_b = Path(db_b).resolve()
+    if not path_a.is_file() or not path_b.is_file():
+        flash("One or both selected database files could not be found.", "error")
+        return redirect(url_for("settings_page"))
+
+    try:
+        from merge_catalogs import analyze_catalogs
+        analysis_report = analyze_catalogs(path_a, path_b)
+        session["merge_analysis"] = analysis_report
+        session["merge_db_a"] = str(path_a)
+        session["merge_db_b"] = str(path_b)
+        flash("Pre-merge analysis completed successfully.", "success")
+    except Exception as e:
+        flash(f"Analysis failed: {e}", "error")
+
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/database/clear-analysis", methods=["POST"])
+def settings_clear_analysis():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    session.pop("merge_analysis", None)
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/database/merge", methods=["POST"])
+def settings_execute_merge():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    db_a = request.form.get("db_a", "").strip()
+    db_b = request.form.get("db_b", "").strip()
+    out_name = request.form.get("output_name", "photos-merged.db").strip()
+
+    if not db_a or not db_b:
+        flash("Both Catalog A and Catalog B must be specified.", "error")
+        return redirect(url_for("settings_page"))
+
+    path_a = Path(db_a).resolve()
+    path_b = Path(db_b).resolve()
+    out_path = (Path(".") / out_name).resolve()
+
+    if out_path in (path_a, path_b):
+        flash("Output database cannot overwrite either source database.", "error")
+        return redirect(url_for("settings_page"))
+
+    if out_path.exists():
+        flash(f"Output database already exists: {out_path.name}. Choose a different filename or delete it first.", "error")
+        return redirect(url_for("settings_page"))
+
+    try:
+        from merge_catalogs import execute_merge
+        start = time.time()
+        execute_merge(path_a, path_b, out_path)
+        elapsed = time.time() - start
+        record_audit("merge_databases", details={"db_a": path_a.name, "db_b": path_b.name, "output": out_path.name, "duration_s": round(elapsed, 2)})
+        session.pop("merge_analysis", None)
+        flash(f"Databases successfully merged into '{out_path.name}' in {elapsed:.1f}s!", "success")
+    except Exception as e:
+        flash(f"Merge failed: {e}", "error")
+
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/database/unmerge", methods=["POST"])
+def settings_execute_unmerge():
+    if not g.current_user or g.current_user["role"] != "admin":
+        abort(403)
+    source_db = request.form.get("source_db", DB_PATH).strip()
+    strategy = request.form.get("strategy", "rollback").strip()
+    out_a_name = request.form.get("out_a", "photos-A-restored.db").strip()
+    out_b_name = request.form.get("out_b", "photos-B-restored.db").strip()
+
+    source_path = Path(source_db).resolve()
+    if not source_path.is_file():
+        flash(f"Source database not found: {source_path}", "error")
+        return redirect(url_for("settings_page"))
+
+    out_a_path = (Path(".") / out_a_name).resolve()
+    out_b_path = (Path(".") / out_b_name).resolve()
+
+    try:
+        from unmerge_catalogs import unmerge_database
+        start = time.time()
+        unmerge_database(source_path, out_a_path=out_a_path, out_b_path=out_b_path, strategy=strategy)
+        elapsed = time.time() - start
+        record_audit("unmerge_database", details={"source": source_path.name, "strategy": strategy, "out_a": out_a_path.name, "out_b": out_b_path.name})
+        flash(f"Database successfully un-merged into '{out_a_path.name}' and '{out_b_path.name}' ({strategy} mode) in {elapsed:.1f}s!", "success")
+    except Exception as e:
+        flash(f"Un-merge failed: {e}", "error")
+
+    return redirect(url_for("settings_page"))
 
 
 # --------------------------------------------------------------------------
@@ -1091,12 +1267,27 @@ def main():
     parser.add_argument("--reset-password", metavar="USERNAME", help="Reset password for an existing user")
     parser.add_argument("--list-users", action="store_true", help="List all registered users")
 
+    # Database backup and versioning CLI options
+    parser.add_argument("--backup", action="store_true", help="Create an online backup of the database to backups/ and exit")
+    parser.add_argument("--check-db", action="store_true", help="Check database schema version and compatibility and exit")
+
     args = parser.parse_args()
 
     if not Path(args.db).is_file():
         raise SystemExit(f"Database not found: {args.db}")
 
     DB_PATH = args.db
+
+    if args.backup:
+        dest = backup_database(DB_PATH)
+        print(f"Backup created successfully: {dest}")
+        sys.exit(0)
+
+    if args.check_db:
+        compat, ver, msg = check_compatibility(DB_PATH)
+        print(f"Database: {DB_PATH}")
+        print(f"Schema Version: v{ver} ({msg})")
+        sys.exit(0 if compat else 1)
 
     # Handle CLI subcommands if specified
     if args.create_admin:
