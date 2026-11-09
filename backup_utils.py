@@ -10,23 +10,52 @@ import sys
 import sqlite3
 import argparse
 import datetime
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Optional
 
-DEFAULT_BACKUP_DIR = Path("/mnt/nfs/site/backups")
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_BACKUP_DIR = BASE_DIR / "backups"
 DEFAULT_RETENTION = 5
 
 
-def ensure_backup_dir(backup_dir: Path = DEFAULT_BACKUP_DIR) -> Path:
-    """Ensure the backup directory exists and has correct permissions."""
-    backup_dir = Path(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    return backup_dir
+def ensure_backup_dir(
+    backup_dir: Optional[str | Path] = None,
+    fallback_parent: Optional[str | Path] = None,
+) -> Path:
+    """
+    Ensure a writable backup directory exists.
+    Tries requested directory, then default project backups/, then fallback_parent/backups/,
+    then user home ~/.photo_backups, and finally system tempdir.
+    """
+    candidates = []
+    if backup_dir:
+        candidates.append(Path(backup_dir))
+    candidates.append(DEFAULT_BACKUP_DIR)
+    if fallback_parent:
+        candidates.append(Path(fallback_parent) / "backups")
+    candidates.append(Path.home() / ".photo_backups")
+    candidates.append(Path(tempfile.gettempdir()) / "photo_backups")
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            # Verify write permissions by touching a hidden test file
+            test_file = candidate / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+            return candidate
+        except (OSError, PermissionError) as e:
+            last_error = e
+            continue
+
+    raise OSError(f"Could not create or write to any backup directory: {last_error}")
 
 
 def backup_database(
     source_db_path: str | Path,
-    backup_dir: str | Path = DEFAULT_BACKUP_DIR,
+    backup_dir: Optional[str | Path] = None,
     prefix: Optional[str] = None,
     max_backups: int = DEFAULT_RETENTION,
 ) -> Path:
@@ -38,7 +67,7 @@ def backup_database(
     if not src_path.exists():
         raise FileNotFoundError(f"Source database not found: {src_path}")
 
-    target_dir = ensure_backup_dir(Path(backup_dir))
+    target_dir = ensure_backup_dir(backup_dir=backup_dir, fallback_parent=src_path.parent)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     db_base = prefix or src_path.stem
     dest_filename = f"{db_base}_{timestamp}.db"

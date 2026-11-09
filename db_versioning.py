@@ -256,8 +256,11 @@ def migrate_database(db_path: str | Path, target_version: int = CURRENT_SCHEMA_V
 
     # Migrations are required: take automatic backup first
     if auto_backup:
-        from backup_utils import backup_database
-        backup_database(p, prefix=f"{p.stem}_pre_migration_v{target_version}")
+        try:
+            from backup_utils import backup_database
+            backup_database(p, prefix=f"{p.stem}_pre_migration_v{target_version}")
+        except Exception as e:
+            print(f"Warning: automatic pre-migration backup could not be created ({e}). Proceeding with migration...", file=sys.stderr)
 
     conn = sqlite3.connect(str(p), timeout=30.0)
     conn.execute("PRAGMA busy_timeout = 30000;")

@@ -55,7 +55,8 @@ except ImportError:
 
 app = Flask(__name__)
 
-SECRET_KEY_FILE = Path(".secret_key")
+BASE_DIR = Path(__file__).resolve().parent
+SECRET_KEY_FILE = BASE_DIR / ".secret_key"
 
 def get_or_create_secret_key():
     if SECRET_KEY_FILE.is_file():
@@ -75,7 +76,7 @@ def get_or_create_secret_key():
 app.secret_key = get_or_create_secret_key()
 
 DB_PATH = "photos.db"           # set from --db at startup
-THUMB_DIR = Path("thumbnails")  # cache dir for generated thumbnails, created on demand
+THUMB_DIR = BASE_DIR / "thumbnails"  # cache dir for generated thumbnails, created on demand
 THUMB_SIZE = (320, 320)
 PER_PAGE = 50
 
@@ -475,7 +476,10 @@ def thumb(photo_id):
     if row is None:
         abort(404)
 
-    THUMB_DIR.mkdir(exist_ok=True)
+    try:
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     thumb_path = THUMB_DIR / f"{photo_id}.jpg"
     if not thumb_path.exists():
         source = Path(row["filepath"])
@@ -497,7 +501,10 @@ _placeholder_cache = None
 def _placeholder_path():
     global _placeholder_cache
     if _placeholder_cache is None:
-        THUMB_DIR.mkdir(exist_ok=True)
+        try:
+            THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         p = THUMB_DIR / "_unavailable.jpg"
         img = Image.new("RGB", THUMB_SIZE, (60, 60, 60))
         ImageDraw.Draw(img).multiline_text(
@@ -763,10 +770,10 @@ def admin_delete_user(user_id):
 def get_available_databases():
     """Discover all accessible .db files in project and Archive directories."""
     candidates = {}
-    for p in Path(".").glob("*.db"):
+    for p in BASE_DIR.glob("*.db"):
         if not p.name.startswith("."):
             res = p.resolve()
-            candidates[str(res)] = {"name": p.name, "path": str(res), "location": "site"}
+            candidates[str(res)] = {"name": p.name, "path": str(res), "location": BASE_DIR.name}
     archive_dir = Path("/mnt/nfs/Archive")
     if archive_dir.is_dir():
         for p in archive_dir.glob("*.db"):
@@ -1080,7 +1087,7 @@ def settings_execute_merge():
 
     path_a = Path(db_a).resolve()
     path_b = Path(db_b).resolve()
-    out_path = (Path(".") / out_name).resolve()
+    out_path = (BASE_DIR / out_name).resolve()
 
     if out_path in (path_a, path_b):
         flash("Output database cannot overwrite either source database.", "error")
@@ -1118,8 +1125,8 @@ def settings_execute_unmerge():
         flash(f"Source database not found: {source_path}", "error")
         return redirect(url_for("settings_page"))
 
-    out_a_path = (Path(".") / out_a_name).resolve()
-    out_b_path = (Path(".") / out_b_name).resolve()
+    out_a_path = (BASE_DIR / out_a_name).resolve()
+    out_b_path = (BASE_DIR / out_b_name).resolve()
 
     try:
         from unmerge_catalogs import unmerge_database
