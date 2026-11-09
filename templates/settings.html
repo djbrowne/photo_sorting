@@ -32,382 +32,484 @@
   </div>
   {% endif %}
 
-  <form method="post" action="{{ url_for('settings_page') }}" class="settings-form">
-    <div class="settings-card">
-      <h2>Tag Dropdown Display</h2>
-      
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" name="all_tags_count" value="1" {% if settings.all_tags_count == '1' %}checked{% endif %}>
-          <span>Include total count in "All tags" option</span>
-        </label>
-        <span class="field-help">Shows the total active photos count next to "All tags".</span>
-      </div>
-
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" name="show_zero_tags" value="1" {% if settings.show_zero_tags == '1' %}checked{% endif %}>
-          <span>Show tags with 0 photos</span>
-        </label>
-        <span class="field-help">When unchecked, tags that currently have no active photos are hidden from the dropdown.</span>
-      </div>
-
-      <div class="form-row">
-        <label class="form-label" for="count_style">Tag count display style:</label>
-        <select name="count_style" id="count_style">
-          <option value="column" {% if settings.count_style == 'column' %}selected{% endif %}>Column padding (straight right margin)</option>
-          <option value="parens" {% if settings.count_style == 'parens' %}selected{% endif %}>Parentheses: tag (count)</option>
-        </select>
-        <span class="field-help">Column padding uses a monospace font for vertical alignment; parentheses use standard text formatting.</span>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>Catalog Display</h2>
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" name="hide_marked_for_removal" value="1" {% if settings.hide_marked_for_removal == '1' %}checked{% endif %}>
-          <span>Hide photos marked for removal</span>
-        </label>
-        <span class="field-help">When enabled, photos marked for removal are hidden from normal catalog views. You can view them at any time using the &ldquo;marked for removal&rdquo; filter.</span>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>Appearance</h2>
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" name="dark_mode" value="1" {% if settings.dark_mode == '1' %}checked{% endif %}>
-          <span>Enable Dark Mode</span>
-        </label>
-        <span class="field-help">Applies a dark color theme across the photo catalog and settings pages.</span>
-      </div>
-    </div>
-
-    <div class="settings-card">
-      <h2>Pagination</h2>
-      <div class="form-row">
-        <label class="form-label" for="per_page">Images per page:</label>
-        <select name="per_page" id="per_page">
-          <option value="10" {% if settings.per_page == '10' %}selected{% endif %}>10</option>
-          <option value="20" {% if settings.per_page == '20' %}selected{% endif %}>20</option>
-          <option value="30" {% if settings.per_page == '30' %}selected{% endif %}>30</option>
-          <option value="50" {% if settings.per_page == '50' %}selected{% endif %}>50</option>
-        </select>
-        <span class="field-help">Choose how many photo cards are shown per page.</span>
-      </div>
-    </div>
-
-    <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Save Settings</button>
-      <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
-    </div>
-  </form>
-
-  <div class="settings-card transfer-card">
-    <h2>Database Status &amp; Configuration Transfer</h2>
-    <p class="section-intro">
-      Current active database: <strong>{{ current_db }}</strong>
-      &middot; Schema Version: <strong>v{{ db_version }}</strong>
-      &middot; Total Photos: <strong>{{ db_photo_count }}</strong>
-    </p>
-
-    {% if current_user and current_user.role == 'admin' and available_dbs %}
-    <div class="switch-db-box">
-      <form method="post" action="{{ url_for('settings_switch_database') }}" class="inline-form switch-db-form">
-        <label for="target_db" class="form-label"><strong>Switch Active Catalog:</strong></label>
-        <select name="target_db" id="target_db" required>
-          {% for db_item in available_dbs %}
-          <option value="{{ db_item['path'] }}" {% if db_item['is_active'] %}selected{% endif %}>
-            {{ db_item['label'] }}{% if db_item['is_active'] %} (Active){% endif %}
-          </option>
-          {% endfor %}
-        </select>
-        <button type="submit" class="btn btn-secondary">Switch Database</button>
-      </form>
-    </div>
+  <!-- Tab Navigation Bar -->
+  <nav class="settings-tabs-nav" role="tablist" aria-label="Settings sections">
+    <button type="button" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-general" id="tab-general" data-tab="general">
+      <span class="tab-icon">&#9881;</span>
+      <span class="tab-title">General Settings</span>
+    </button>
+    <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-database" id="tab-database" data-tab="database">
+      <span class="tab-icon">&#128451;</span>
+      <span class="tab-title">Database Operations</span>
+      {% if is_merged_db %}
+      <span class="tab-badge">Merged</span>
+      {% endif %}
+    </button>
+    {% if current_user and current_user.role == 'admin' %}
+    <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-users" id="tab-users" data-tab="users">
+      <span class="tab-icon">&#128101;</span>
+      <span class="tab-title">User Management</span>
+      {% if user_list %}
+      <span class="tab-badge">{{ user_list|length }}</span>
+      {% endif %}
+    </button>
     {% endif %}
+  </nav>
 
-    <div class="transfer-grid">
-      <div class="transfer-box">
-        <h3>Copy From Another Database</h3>
-        <p class="field-help">Import the configuration table from another database file on this server:</p>
-        {% if other_dbs %}
-        <form method="post" action="{{ url_for('settings_import_db') }}" class="inline-form">
-          <select name="source_db" required>
-            <option value="">Select source database...</option>
-            {% for db_name in other_dbs %}
-            <option value="{{ db_name }}">{{ db_name }}</option>
-            {% endfor %}
+  <!-- TAB PANEL 1: General User Settings -->
+  <div id="panel-general" class="tab-panel active" role="tabpanel" aria-labelledby="tab-general">
+    <form method="post" action="{{ url_for('settings_page') }}" class="settings-form">
+      <div class="settings-card">
+        <h2>Tag Dropdown Display</h2>
+        
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="all_tags_count" value="1" {% if settings.all_tags_count == '1' %}checked{% endif %}>
+            <span>Include total count in "All tags" option</span>
+          </label>
+          <span class="field-help">Shows the total active photos count next to "All tags".</span>
+        </div>
+
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="show_zero_tags" value="1" {% if settings.show_zero_tags == '1' %}checked{% endif %}>
+            <span>Show tags with 0 photos</span>
+          </label>
+          <span class="field-help">When unchecked, tags that currently have no active photos are hidden from the dropdown.</span>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label" for="count_style">Tag count display style:</label>
+          <select name="count_style" id="count_style">
+            <option value="column" {% if settings.count_style == 'column' %}selected{% endif %}>Column padding (straight right margin)</option>
+            <option value="parens" {% if settings.count_style == 'parens' %}selected{% endif %}>Parentheses: tag (count)</option>
           </select>
-          <button type="submit" class="btn btn-secondary">Copy Settings</button>
-        </form>
-        {% else %}
-        <p class="muted-note">No other database files (.db) found in current directory.</p>
-        {% endif %}
-      </div>
-
-      <div class="transfer-box">
-        <h3>Backup &amp; File Transfer</h3>
-        <p class="field-help">Export settings to a JSON file or restore from a file:</p>
-        <div class="file-transfer-actions">
-          <a href="{{ url_for('settings_export') }}" class="btn btn-secondary">Export Settings (JSON)</a>
-          
-          <form method="post" action="{{ url_for('settings_import_json') }}" enctype="multipart/form-data" class="upload-form">
-            <input type="file" name="settings_file" accept=".json" required>
-            <button type="submit" class="btn btn-secondary">Import JSON</button>
-          </form>
+          <span class="field-help">Column padding uses a monospace font for vertical alignment; parentheses use standard text formatting.</span>
         </div>
       </div>
-    </div>
-  </div>
 
-  {% if current_user and current_user.role == 'admin' %}
-  <div class="settings-card admin-card">
-    <h2>Database Backups &amp; Snapshots (Admin)</h2>
-    <p class="field-help">
-      Create non-blocking online snapshots of the active database or download an offline copy. Automatic retention keeps up to 5 snapshots in <code>/mnt/nfs/site/backups/</code>.
-    </p>
-
-    <div class="backup-actions">
-      <form method="post" action="{{ url_for('settings_create_backup') }}" style="display:inline;">
-        <button type="submit" class="btn btn-primary">&#128190; Create Instant Snapshot</button>
-      </form>
-      <a href="{{ url_for('settings_download_backup') }}" class="btn btn-secondary">&#11015; Download Active Database (.db)</a>
-    </div>
-
-    <div class="admin-user-list">
-      <h3>Saved Backups</h3>
-      {% if backups_list %}
-      <div class="table-responsive">
-        <table class="backup-table">
-          <thead>
-            <tr>
-              <th>Filename</th>
-              <th>Size</th>
-              <th>Schema Version</th>
-              <th>Created At</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for b in backups_list %}
-            <tr>
-              <td><code>{{ b['filename'] }}</code></td>
-              <td>{{ b['size_formatted'] }}</td>
-              <td><span class="user-role-badge role-user">v{{ b['version'] }}</span></td>
-              <td>{{ b['created_at'] }}</td>
-              <td>
-                <form method="post" action="{{ url_for('settings_delete_backup', filename=b['filename']) }}" onsubmit="return confirm('Delete backup {{ b['filename'] }}?');" class="inline-delete-form">
-                  <button type="submit" class="btn-delete" title="Delete Backup">&times; Delete</button>
-                </form>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p class="muted-note">No snapshots found in backup directory.</p>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="settings-card admin-card">
-    <h2>Database Integration &amp; Merge (Admin)</h2>
-    <p class="field-help">
-      Compare and merge two catalog databases safely into a new third catalog. Source databases are opened strictly in read-only mode.
-    </p>
-
-    <form method="post" action="{{ url_for('settings_analyze_database') }}" class="merge-setup-form">
-      <div class="merge-select-grid">
+      <div class="settings-card">
+        <h2>Catalog Display</h2>
         <div class="form-row">
-          <label class="form-label" for="db_a"><strong>Catalog A (Primary):</strong></label>
-          <select name="db_a" id="db_a" required>
+          <label class="checkbox-label">
+            <input type="checkbox" name="hide_marked_for_removal" value="1" {% if settings.hide_marked_for_removal == '1' %}checked{% endif %}>
+            <span>Hide photos marked for removal</span>
+          </label>
+          <span class="field-help">When enabled, photos marked for removal are hidden from normal catalog views. You can view them at any time using the &ldquo;marked for removal&rdquo; filter.</span>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h2>Appearance</h2>
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="dark_mode" value="1" {% if settings.dark_mode == '1' %}checked{% endif %}>
+            <span>Enable Dark Mode</span>
+          </label>
+          <span class="field-help">Applies a dark color theme across the photo catalog and settings pages.</span>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h2>Pagination</h2>
+        <div class="form-row">
+          <label class="form-label" for="per_page">Images per page:</label>
+          <select name="per_page" id="per_page">
+            <option value="10" {% if settings.per_page == '10' %}selected{% endif %}>10</option>
+            <option value="20" {% if settings.per_page == '20' %}selected{% endif %}>20</option>
+            <option value="30" {% if settings.per_page == '30' %}selected{% endif %}>30</option>
+            <option value="50" {% if settings.per_page == '50' %}selected{% endif %}>50</option>
+          </select>
+          <span class="field-help">Choose how many photo cards are shown per page.</span>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <!-- TAB PANEL 2: Database Operations -->
+  <div id="panel-database" class="tab-panel" role="tabpanel" aria-labelledby="tab-database">
+    <div class="settings-card transfer-card">
+      <h2>Database Status &amp; Configuration Transfer</h2>
+      <p class="section-intro">
+        Current active database: <strong>{{ current_db }}</strong>
+        &middot; Schema Version: <strong>v{{ db_version }}</strong>
+        &middot; Total Photos: <strong>{{ db_photo_count }}</strong>
+      </p>
+
+      {% if current_user and current_user.role == 'admin' and available_dbs %}
+      <div class="switch-db-box">
+        <form method="post" action="{{ url_for('settings_switch_database') }}" class="inline-form switch-db-form">
+          <label for="target_db" class="form-label"><strong>Switch Active Catalog:</strong></label>
+          <select name="target_db" id="target_db" required>
             {% for db_item in available_dbs %}
-            <option value="{{ db_item['path'] }}" {% if db_item['path'] == merge_db_a %}selected{% endif %}>
+            <option value="{{ db_item['path'] }}" {% if db_item['is_active'] %}selected{% endif %}>
               {{ db_item['label'] }}{% if db_item['is_active'] %} (Active){% endif %}
             </option>
             {% endfor %}
           </select>
-        </div>
-
-        <div class="form-row">
-          <label class="form-label" for="db_b"><strong>Catalog B (Secondary):</strong></label>
-          <select name="db_b" id="db_b" required>
-            <option value="">Select secondary database...</option>
-            {% for db_item in available_dbs %}
-            <option value="{{ db_item['path'] }}" {% if db_item['path'] == merge_db_b %}selected{% endif %}>
-              {{ db_item['label'] }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <button type="submit" class="btn btn-secondary">&#128269; Run Pre-Merge Analysis (Dry-Run)</button>
-      </div>
-    </form>
-
-    {% if merge_analysis %}
-    <div class="analysis-results-card">
-      <div class="analysis-header">
-        <h3>Pre-Merge Analysis Report</h3>
-        <form method="post" action="{{ url_for('settings_clear_analysis') }}" style="display:inline;">
-          <button type="submit" class="btn-clear" title="Clear analysis">&times; Clear</button>
+          <button type="submit" class="btn btn-secondary">Switch Database</button>
         </form>
       </div>
+      {% endif %}
 
-      <div class="metrics-grid">
-        <div class="metric-box">
-          <span class="metric-num">{{ "{:,}".format(merge_analysis['total_a']) }}</span>
-          <span class="metric-label">Photos in Catalog A</span>
+      <div class="transfer-grid">
+        <div class="transfer-box">
+          <h3>Copy From Another Database</h3>
+          <p class="field-help">Import the configuration table from another database file on this server:</p>
+          {% if other_dbs %}
+          <form method="post" action="{{ url_for('settings_import_db') }}" class="inline-form">
+            <select name="source_db" required>
+              <option value="">Select source database...</option>
+              {% for db_name in other_dbs %}
+              <option value="{{ db_name }}">{{ db_name }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary">Copy Settings</button>
+          </form>
+          {% else %}
+          <p class="muted-note">No other database files (.db) found in current directory.</p>
+          {% endif %}
         </div>
-        <div class="metric-box">
-          <span class="metric-num">{{ "{:,}".format(merge_analysis['total_b']) }}</span>
-          <span class="metric-label">Photos in Catalog B</span>
-        </div>
-        <div class="metric-box">
-          <span class="metric-num">{{ "{:,}".format(merge_analysis['shared']) }}</span>
-          <span class="metric-label">Shared (Overlapping)</span>
-        </div>
-        <div class="metric-box highlight">
-          <span class="metric-num">{{ "{:,}".format(merge_analysis['total_merged_estimate']) }}</span>
-          <span class="metric-label">Estimated Merged Total</span>
+
+        <div class="transfer-box">
+          <h3>Backup &amp; File Transfer</h3>
+          <p class="field-help">Export settings to a JSON file or restore from a file:</p>
+          <div class="file-transfer-actions">
+            <a href="{{ url_for('settings_export') }}" class="btn btn-secondary">Export Settings (JSON)</a>
+            
+            <form method="post" action="{{ url_for('settings_import_json') }}" enctype="multipart/form-data" class="upload-form">
+              <input type="file" name="settings_file" accept=".json" required>
+              <button type="submit" class="btn btn-secondary">Import JSON</button>
+            </form>
+          </div>
         </div>
       </div>
+    </div>
 
-      <div class="metrics-details">
-        <p><strong>Conflict Potential in Shared Records:</strong> Differing descriptions: <strong>{{ merge_analysis['desc_conflicts'] }}</strong> &middot; Differing removal flags: <strong>{{ merge_analysis['removal_conflicts'] }}</strong> &middot; Differing status: <strong>{{ merge_analysis['status_conflicts'] }}</strong></p>
-        <p><strong>Tag Metrics:</strong> Tags in A: <strong>{{ merge_analysis['tags_a'] }}</strong> &middot; Tags in B: <strong>{{ merge_analysis['tags_b'] }}</strong> &middot; Unified tag vocabulary: <strong>{{ merge_analysis['union_tags'] }}</strong></p>
+    {% if current_user and current_user.role == 'admin' %}
+    <div class="settings-card admin-card">
+      <h2>Database Backups &amp; Snapshots (Admin)</h2>
+      <p class="field-help">
+        Create non-blocking online snapshots of the active database or download an offline copy. Automatic retention keeps up to 5 snapshots in <code>/mnt/nfs/site/backups/</code>.
+      </p>
+
+      <div class="backup-actions">
+        <form method="post" action="{{ url_for('settings_create_backup') }}" style="display:inline;">
+          <button type="submit" class="btn btn-primary">&#128190; Create Instant Snapshot</button>
+        </form>
+        <a href="{{ url_for('settings_download_backup') }}" class="btn btn-secondary">&#11015; Download Active Database (.db)</a>
       </div>
 
-      <form method="post" action="{{ url_for('settings_execute_merge') }}" class="execute-merge-form" onsubmit="return confirm('Execute database merge? This will create a new combined catalog file.');">
-        <input type="hidden" name="db_a" value="{{ merge_db_a }}">
-        <input type="hidden" name="db_b" value="{{ merge_db_b }}">
+      <div class="admin-user-list">
+        <h3>Saved Backups</h3>
+        {% if backups_list %}
+        <div class="table-responsive">
+          <table class="backup-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Size</th>
+                <th>Schema Version</th>
+                <th>Created At</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for b in backups_list %}
+              <tr>
+                <td><code>{{ b['filename'] }}</code></td>
+                <td>{{ b['size_formatted'] }}</td>
+                <td><span class="user-role-badge role-user">v{{ b['version'] }}</span></td>
+                <td>{{ b['created_at'] }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('settings_delete_backup', filename=b['filename']) }}" onsubmit="return confirm('Delete backup {{ b['filename'] }}?');" class="inline-delete-form">
+                    <button type="submit" class="btn-delete" title="Delete Backup">&times; Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted-note">No snapshots found in backup directory.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="settings-card admin-card">
+      <h2>Database Integration &amp; Merge (Admin)</h2>
+      <p class="field-help">
+        Compare and merge two catalog databases safely into a new third catalog. Source databases are opened strictly in read-only mode.
+      </p>
+
+      <form method="post" action="{{ url_for('settings_analyze_database') }}" class="merge-setup-form">
+        <div class="merge-select-grid">
+          <div class="form-row">
+            <label class="form-label" for="db_a"><strong>Catalog A (Primary):</strong></label>
+            <select name="db_a" id="db_a" required>
+              {% for db_item in available_dbs %}
+              <option value="{{ db_item['path'] }}" {% if db_item['path'] == merge_db_a %}selected{% endif %}>
+                {{ db_item['label'] }}{% if db_item['is_active'] %} (Active){% endif %}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label" for="db_b"><strong>Catalog B (Secondary):</strong></label>
+            <select name="db_b" id="db_b" required>
+              <option value="">Select secondary database...</option>
+              {% for db_item in available_dbs %}
+              <option value="{{ db_item['path'] }}" {% if db_item['path'] == merge_db_b %}selected{% endif %}>
+                {{ db_item['label'] }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
         <div class="form-row">
-          <label class="form-label" for="output_name"><strong>Output Merged Filename:</strong></label>
-          <input type="text" name="output_name" id="output_name" value="photos-merged.db" required class="form-input">
+          <button type="submit" class="btn btn-secondary">&#128269; Run Pre-Merge Analysis (Dry-Run)</button>
         </div>
-        <button type="submit" class="btn btn-primary">&#9881; Execute Database Merge</button>
+      </form>
+
+      {% if merge_analysis %}
+      <div class="analysis-results-card">
+        <div class="analysis-header">
+          <h3>Pre-Merge Analysis Report</h3>
+          <form method="post" action="{{ url_for('settings_clear_analysis') }}" style="display:inline;">
+            <button type="submit" class="btn-clear" title="Clear analysis">&times; Clear</button>
+          </form>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <span class="metric-num">{{ "{:,}".format(merge_analysis['total_a']) }}</span>
+            <span class="metric-label">Photos in Catalog A</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-num">{{ "{:,}".format(merge_analysis['total_b']) }}</span>
+            <span class="metric-label">Photos in Catalog B</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-num">{{ "{:,}".format(merge_analysis['shared']) }}</span>
+            <span class="metric-label">Shared (Overlapping)</span>
+          </div>
+          <div class="metric-box highlight">
+            <span class="metric-num">{{ "{:,}".format(merge_analysis['total_merged_estimate']) }}</span>
+            <span class="metric-label">Estimated Merged Total</span>
+          </div>
+        </div>
+
+        <div class="metrics-details">
+          <p><strong>Conflict Potential in Shared Records:</strong> Differing descriptions: <strong>{{ merge_analysis['desc_conflicts'] }}</strong> &middot; Differing removal flags: <strong>{{ merge_analysis['removal_conflicts'] }}</strong> &middot; Differing status: <strong>{{ merge_analysis['status_conflicts'] }}</strong></p>
+          <p><strong>Tag Metrics:</strong> Tags in A: <strong>{{ merge_analysis['tags_a'] }}</strong> &middot; Tags in B: <strong>{{ merge_analysis['tags_b'] }}</strong> &middot; Unified tag vocabulary: <strong>{{ merge_analysis['union_tags'] }}</strong></p>
+        </div>
+
+        <form method="post" action="{{ url_for('settings_execute_merge') }}" class="execute-merge-form" onsubmit="return confirm('Execute database merge? This will create a new combined catalog file.');">
+          <input type="hidden" name="db_a" value="{{ merge_db_a }}">
+          <input type="hidden" name="db_b" value="{{ merge_db_b }}">
+          <div class="form-row">
+            <label class="form-label" for="output_name"><strong>Output Merged Filename:</strong></label>
+            <input type="text" name="output_name" id="output_name" value="photos-merged.db" required class="form-input">
+          </div>
+          <button type="submit" class="btn btn-primary">&#9881; Execute Database Merge</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if is_merged_db %}
+    <div class="settings-card admin-card">
+      <h2>Database Un-Merge &amp; Separation (Admin)</h2>
+      <p class="field-help">
+        This active database contains lineage provenance (Schema v{{ db_version }}). You can cleanly un-merge it back into independent Catalog A and Catalog B files.
+      </p>
+
+      <form method="post" action="{{ url_for('settings_execute_unmerge') }}" onsubmit="return confirm('Execute un-merge? This will generate two restored database files.');">
+        <input type="hidden" name="source_db" value="{{ current_db_path }}">
+        
+        <div class="form-row">
+          <label class="form-label"><strong>Un-Merge Strategy:</strong></label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="strategy" value="rollback" checked>
+              <span><strong>Rollback:</strong> Exact pre-merge state snapshot (restores pre-merge descriptions and flags; discards post-merge tags).</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="strategy" value="forward">
+              <span><strong>Smart Forward:</strong> Propagates post-merge edits and newly added tags to target databases.</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="merge-select-grid">
+          <div class="form-row">
+            <label class="form-label" for="out_a">Restored Catalog A Filename:</label>
+            <input type="text" name="out_a" id="out_a" value="photos-A-restored.db" required class="form-input">
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="out_b">Restored Catalog B Filename:</label>
+            <input type="text" name="out_b" id="out_b" value="photos-B-restored.db" required class="form-input">
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">&#9112; Execute Database Un-Merge</button>
       </form>
     </div>
     {% endif %}
+    {% endif %}
   </div>
 
-  {% if is_merged_db %}
-  <div class="settings-card admin-card">
-    <h2>Database Un-Merge &amp; Separation (Admin)</h2>
-    <p class="field-help">
-      This active database contains lineage provenance (Schema v{{ db_version }}). You can cleanly un-merge it back into independent Catalog A and Catalog B files.
-    </p>
+  <!-- TAB PANEL 3: User Management -->
+  {% if current_user and current_user.role == 'admin' %}
+  <div id="panel-users" class="tab-panel" role="tabpanel" aria-labelledby="tab-users">
+    <div class="settings-card admin-card">
+      <h2>User Management (Admin)</h2>
+      <p class="field-help">Only administrators can add or manage user accounts.</p>
 
-    <form method="post" action="{{ url_for('settings_execute_unmerge') }}" onsubmit="return confirm('Execute un-merge? This will generate two restored database files.');">
-      <input type="hidden" name="source_db" value="{{ current_db_path }}">
-      
-      <div class="form-row">
-        <label class="form-label"><strong>Un-Merge Strategy:</strong></label>
-        <div class="radio-group">
-          <label class="radio-label">
-            <input type="radio" name="strategy" value="rollback" checked>
-            <span><strong>Rollback:</strong> Exact pre-merge state snapshot (restores pre-merge descriptions and flags; discards post-merge tags).</span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" name="strategy" value="forward">
-            <span><strong>Smart Forward:</strong> Propagates post-merge edits and newly added tags to target databases.</span>
-          </label>
-        </div>
+      <div class="admin-user-create">
+        <h3>Create New User</h3>
+        <form method="post" action="{{ url_for('admin_create_user') }}" class="user-create-form">
+          <div class="user-create-grid">
+            <div class="form-row">
+              <label class="form-label" for="new_username">Username</label>
+              <input type="text" id="new_username" name="username" required placeholder="username" class="form-input">
+            </div>
+            <div class="form-row">
+              <label class="form-label" for="new_password">Password</label>
+              <input type="password" id="new_password" name="password" required placeholder="password" class="form-input">
+            </div>
+            <div class="form-row">
+              <label class="form-label" for="new_role">Role</label>
+              <select id="new_role" name="role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <div class="form-row btn-align">
+              <button type="submit" class="btn btn-primary">Create User</button>
+            </div>
+          </div>
+        </form>
       </div>
 
-      <div class="merge-select-grid">
-        <div class="form-row">
-          <label class="form-label" for="out_a">Restored Catalog A Filename:</label>
-          <input type="text" name="out_a" id="out_a" value="photos-A-restored.db" required class="form-input">
+      <div class="admin-user-list">
+        <h3>Registered Users</h3>
+        {% if user_list %}
+        <div class="audit-table-wrap">
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th>Last Login</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in user_list %}
+              <tr>
+                <td>{{ u['id'] }}</td>
+                <td><strong>{{ u['username'] }}</strong></td>
+                <td><span class="user-role-badge role-{{ u['role'] }}">{{ u['role'] }}</span></td>
+                <td>{{ u['created_at'] or '&mdash;' }}</td>
+                <td>{{ u['last_login'] or 'Never' }}</td>
+                <td>
+                  {% if u['id'] != current_user['id'] %}
+                  <form method="post" action="{{ url_for('admin_delete_user', user_id=u['id']) }}" onsubmit="return confirm('Are you sure you want to delete user {{ u['username'] }}?');" class="inline-delete-form">
+                    <button type="submit" class="btn-delete" title="Delete User">&times; Delete</button>
+                  </form>
+                  {% else %}
+                  <span class="muted-note">(You)</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
-        <div class="form-row">
-          <label class="form-label" for="out_b">Restored Catalog B Filename:</label>
-          <input type="text" name="out_b" id="out_b" value="photos-B-restored.db" required class="form-input">
-        </div>
+        {% endif %}
       </div>
-
-      <button type="submit" class="btn btn-primary">&#9112; Execute Database Un-Merge</button>
-    </form>
-  </div>
-  {% endif %}
-
-  <div class="settings-card admin-card">
-    <h2>User Management (Admin)</h2>
-    <p class="field-help">Only administrators can add or manage user accounts.</p>
-
-    <div class="admin-user-create">
-      <h3>Create New User</h3>
-      <form method="post" action="{{ url_for('admin_create_user') }}" class="user-create-form">
-        <div class="user-create-grid">
-          <div class="form-row">
-            <label class="form-label" for="new_username">Username</label>
-            <input type="text" id="new_username" name="username" required placeholder="username" class="form-input">
-          </div>
-          <div class="form-row">
-            <label class="form-label" for="new_password">Password</label>
-            <input type="password" id="new_password" name="password" required placeholder="password" class="form-input">
-          </div>
-          <div class="form-row">
-            <label class="form-label" for="new_role">Role</label>
-            <select id="new_role" name="role">
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          <div class="form-row btn-align">
-            <button type="submit" class="btn btn-primary">Create User</button>
-          </div>
-        </div>
-      </form>
-    </div>
-
-    <div class="admin-user-list">
-      <h3>Registered Users</h3>
-      {% if user_list %}
-      <div class="audit-table-wrap">
-        <table class="audit-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Created</th>
-              <th>Last Login</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for u in user_list %}
-            <tr>
-              <td>{{ u['id'] }}</td>
-              <td><strong>{{ u['username'] }}</strong></td>
-              <td><span class="user-role-badge role-{{ u['role'] }}">{{ u['role'] }}</span></td>
-              <td>{{ u['created_at'] or '&mdash;' }}</td>
-              <td>{{ u['last_login'] or 'Never' }}</td>
-              <td>
-                {% if u['id'] != current_user['id'] %}
-                <form method="post" action="{{ url_for('admin_delete_user', user_id=u['id']) }}" onsubmit="return confirm('Are you sure you want to delete user {{ u['username'] }}?');" class="inline-delete-form">
-                  <button type="submit" class="btn-delete" title="Delete User">&times; Delete</button>
-                </form>
-                {% else %}
-                <span class="muted-note">(You)</span>
-                {% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% endif %}
     </div>
   </div>
   {% endif %}
 </main>
+
+<script>
+(function() {
+  const tabs = document.querySelectorAll('.settings-tabs-nav .tab-btn');
+  const panels = document.querySelectorAll('.tab-panel');
+
+  function switchTab(targetId, updateHistory) {
+    let targetBtn = document.querySelector(`.tab-btn[data-tab="${targetId}"]`);
+    let targetPanel = document.getElementById(`panel-${targetId}`);
+
+    if (!targetBtn || !targetPanel) {
+      targetId = 'general';
+      targetBtn = document.querySelector(`.tab-btn[data-tab="general"]`);
+      targetPanel = document.getElementById('panel-general');
+    }
+
+    tabs.forEach(btn => {
+      const isActive = (btn === targetBtn);
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+
+    panels.forEach(panel => {
+      panel.classList.toggle('active', panel === targetPanel);
+    });
+
+    try {
+      localStorage.setItem('active_settings_tab', targetId);
+    } catch (e) {}
+
+    if (updateHistory) {
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', '#' + targetId);
+      } else {
+        window.location.hash = targetId;
+      }
+    }
+  }
+
+  tabs.forEach(btn => {
+    btn.addEventListener('click', function() {
+      switchTab(this.getAttribute('data-tab'), true);
+    });
+  });
+
+  // Check URL hash first, then localStorage, then default to general
+  const hash = (window.location.hash || '').replace('#', '').trim();
+  const savedTab = (() => {
+    try { return localStorage.getItem('active_settings_tab'); } catch (e) { return null; }
+  })();
+
+  if (hash && document.querySelector(`.tab-btn[data-tab="${hash}"]`)) {
+    switchTab(hash, false);
+  } else if (savedTab && document.querySelector(`.tab-btn[data-tab="${savedTab}"]`)) {
+    switchTab(savedTab, false);
+  } else {
+    switchTab('general', false);
+  }
+
+  window.addEventListener('hashchange', function() {
+    const newHash = (window.location.hash || '').replace('#', '').trim();
+    if (newHash && document.querySelector(`.tab-btn[data-tab="${newHash}"]`)) {
+      switchTab(newHash, false);
+    }
+  });
+})();
+</script>
 
 </body>
 </html>

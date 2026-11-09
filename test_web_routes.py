@@ -68,6 +68,7 @@ class TestWebDatabaseRoutes(unittest.TestCase):
         """)
         conn_a.execute("INSERT INTO photos (filepath, filename, description) VALUES ('/img/a.jpg', 'a.jpg', 'Desc A');")
         conn_a.execute("INSERT INTO users (id, username, password_hash, role, access_level, created_at) VALUES (1, 'admin', 'hash', 'admin', 99, '2026-01-01');")
+        conn_a.execute("INSERT INTO users (id, username, password_hash, role, access_level, created_at) VALUES (2, 'regular_user', 'hash', 'user', 1, '2026-01-01');")
         conn_a.commit()
         conn_a.close()
 
@@ -110,6 +111,51 @@ class TestWebDatabaseRoutes(unittest.TestCase):
         self.assertIn(b"Schema Version", res.data)
         self.assertIn(b"Database Backups", res.data)
 
+    def test_settings_tabs_admin_view(self):
+        self._login_as_admin()
+        res = self.client.get("/settings")
+        self.assertEqual(res.status_code, 200)
+        # Check nav bar
+        self.assertIn(b'class="settings-tabs-nav"', res.data)
+        # Check tab buttons
+        self.assertIn(b'data-tab="general"', res.data)
+        self.assertIn(b'data-tab="database"', res.data)
+        self.assertIn(b'data-tab="users"', res.data)
+        # Check tab panels
+        self.assertIn(b'id="panel-general"', res.data)
+        self.assertIn(b'id="panel-database"', res.data)
+        self.assertIn(b'id="panel-users"', res.data)
+
+    def test_settings_tabs_non_admin_view(self):
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = 2
+            sess["username"] = "regular_user"
+            sess["role"] = "user"
+        res = self.client.get("/settings")
+        self.assertEqual(res.status_code, 200)
+        # General & Database are present
+        self.assertIn(b'data-tab="general"', res.data)
+        self.assertIn(b'data-tab="database"', res.data)
+        # User management is hidden for non-admin
+        self.assertNotIn(b'data-tab="users"', res.data)
+        self.assertNotIn(b'id="panel-users"', res.data)
+
+    def test_database_action_redirect_hash(self):
+        self._login_as_admin()
+        res = self.client.post("/settings/backup/create", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertTrue(res.headers["Location"].endswith("#database"))
+
+    def test_user_action_redirect_hash(self):
+        self._login_as_admin()
+        res = self.client.post(
+            "/admin/users/create",
+            data={"username": "newtester", "password": "pass1234", "role": "user"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res.status_code, 302)
+        self.assertTrue(res.headers["Location"].endswith("#users"))
+
     def test_switch_database_route(self):
         self._login_as_admin()
         res = self.client.post("/settings/database/switch", data={"target_db": str(self.db_b_path)}, follow_redirects=True)
@@ -141,7 +187,9 @@ class TestWebDatabaseRoutes(unittest.TestCase):
         # Verify merged DB has Schema v3
         ver = detect_schema_version(merged_file)
         self.assertEqual(ver, VERSION_PROVENANCE)
-        merged_file.unlink()
+        for p in [merged_file, Path(str(merged_file) + "-wal"), Path(str(merged_file) + "-shm")]:
+            if p.exists():
+                p.unlink()
 
     def test_backup_create_route(self):
         self._login_as_admin()

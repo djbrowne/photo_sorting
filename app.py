@@ -715,13 +715,13 @@ def admin_create_user():
 
     if not username or not password:
         flash("Username and password are required.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#users")
 
     db = get_db()
     existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if existing:
         flash(f"User '{username}' already exists.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#users")
 
     p_hash = generate_password_hash(password)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -737,7 +737,7 @@ def admin_create_user():
     db_write_with_retry(_create)
     record_audit("create_user", details={"created_username": username, "role": role})
     flash(f"User '{username}' ({role}) created successfully.", "success")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#users")
 
 
 @app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
@@ -746,7 +746,7 @@ def admin_delete_user(user_id):
         abort(403)
     if user_id == g.current_user["id"]:
         flash("You cannot delete your own account.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#users")
 
     db = get_db()
     user = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -760,7 +760,7 @@ def admin_delete_user(user_id):
         db_write_with_retry(_delete)
         record_audit("delete_user", details={"deleted_username": user["username"]})
         flash(f"User '{user['username']}' deleted.", "success")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#users")
 
 
 # --------------------------------------------------------------------------
@@ -869,10 +869,9 @@ def settings_export():
 def settings_import_json():
     file = request.files.get("settings_file")
     user_id = g.current_user["id"] if g.current_user else None
-    current_db = Path(DB_PATH).name
-    other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
     if not file or not file.filename:
-        return redirect(url_for("settings_page"))
+        flash("No file selected for import.", "error")
+        return redirect(url_for("settings_page") + "#database")
     try:
         data = json.load(file)
         if isinstance(data, dict):
@@ -880,25 +879,12 @@ def settings_import_json():
                 save_user_settings(user_id, data)
             else:
                 save_settings(data)
-            return render_template(
-                "settings.html",
-                settings=get_settings(user_id),
-                other_dbs=other_dbs,
-                current_db=current_db,
-                message="Successfully imported settings from JSON file.",
-                msg_type="success",
-            )
+            flash("Successfully imported settings from JSON file.", "success")
         else:
             raise ValueError("Invalid format: expected JSON object")
     except Exception as e:
-        return render_template(
-            "settings.html",
-            settings=get_settings(user_id),
-            other_dbs=other_dbs,
-            current_db=current_db,
-            message=f"Failed to import settings: {e}",
-            msg_type="error",
-        )
+        flash(f"Failed to import settings: {e}", "error")
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/import-db", methods=["POST"])
@@ -907,17 +893,10 @@ def settings_import_db():
     source_path = Path(source_db_name)
     user_id = g.current_user["id"] if g.current_user else None
     current_db = Path(DB_PATH).name
-    other_dbs = sorted([f.name for f in Path(".").glob("*.db") if f.name != current_db])
 
     if not source_path.is_file() or source_db_name == current_db or source_path.suffix != ".db":
-        return render_template(
-            "settings.html",
-            settings=get_settings(user_id),
-            other_dbs=other_dbs,
-            current_db=current_db,
-            message="Invalid source database selected.",
-            msg_type="error",
-        )
+        flash("Invalid source database selected.", "error")
+        return redirect(url_for("settings_page") + "#database")
 
     try:
         conn = sqlite3.connect(source_path)
@@ -927,14 +906,8 @@ def settings_import_db():
         ).fetchone()[0]
         if not has_table:
             conn.close()
-            return render_template(
-                "settings.html",
-                settings=get_settings(user_id),
-                other_dbs=other_dbs,
-                current_db=current_db,
-                message=f"No settings table found in '{source_db_name}'.",
-                msg_type="error",
-            )
+            flash(f"No settings table found in '{source_db_name}'.", "error")
+            return redirect(url_for("settings_page") + "#database")
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
         imported = {row["key"]: row["value"] for row in rows}
         conn.close()
@@ -943,29 +916,13 @@ def settings_import_db():
                 save_user_settings(user_id, imported)
             else:
                 save_settings(imported)
-            msg = f"Successfully copied {len(imported)} settings from '{source_db_name}'."
-            m_type = "success"
+            flash(f"Successfully copied {len(imported)} settings from '{source_db_name}'.", "success")
         else:
-            msg = f"No settings found in '{source_db_name}'."
-            m_type = "error"
+            flash(f"No settings found in '{source_db_name}'.", "error")
     except Exception as e:
-        return render_template(
-            "settings.html",
-            settings=get_settings(user_id),
-            other_dbs=other_dbs,
-            current_db=current_db,
-            message=f"Error reading '{source_db_name}': {e}",
-            msg_type="error",
-        )
+        flash(f"Error reading '{source_db_name}': {e}", "error")
 
-    return render_template(
-        "settings.html",
-        settings=get_settings(user_id),
-        other_dbs=other_dbs,
-        current_db=current_db,
-        message=msg,
-        msg_type=m_type,
-    )
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/backup/create", methods=["POST"])
@@ -978,7 +935,7 @@ def settings_create_backup():
         flash(f"Backup created successfully: {dest.name}", "success")
     except Exception as e:
         flash(f"Backup failed: {e}", "error")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/backup/download")
@@ -1009,7 +966,7 @@ def settings_delete_backup(filename):
             flash(f"Failed to delete backup: {e}", "error")
     else:
         flash("Backup file not found.", "error")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/database/switch", methods=["POST"])
@@ -1020,19 +977,19 @@ def settings_switch_database():
     new_db = request.form.get("target_db", "").strip()
     if not new_db:
         flash("No target database specified.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     target_path = Path(new_db).resolve()
     if not target_path.is_file():
         flash(f"Database file not found: {target_path}", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     prev_db = DB_PATH
     DB_PATH = str(target_path)
     migrate(DB_PATH)
     record_audit("switch_database", details={"from": prev_db, "to": DB_PATH})
     flash(f"Switched active database to: {target_path.name}", "success")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/database/analyze", methods=["POST"])
@@ -1044,13 +1001,13 @@ def settings_analyze_database():
 
     if not db_a or not db_b:
         flash("Both Catalog A and Catalog B must be selected.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     path_a = Path(db_a).resolve()
     path_b = Path(db_b).resolve()
     if not path_a.is_file() or not path_b.is_file():
         flash("One or both selected database files could not be found.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     try:
         from merge_catalogs import analyze_catalogs
@@ -1062,7 +1019,7 @@ def settings_analyze_database():
     except Exception as e:
         flash(f"Analysis failed: {e}", "error")
 
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/database/clear-analysis", methods=["POST"])
@@ -1070,7 +1027,7 @@ def settings_clear_analysis():
     if not g.current_user or g.current_user["role"] != "admin":
         abort(403)
     session.pop("merge_analysis", None)
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/database/merge", methods=["POST"])
@@ -1083,7 +1040,7 @@ def settings_execute_merge():
 
     if not db_a or not db_b:
         flash("Both Catalog A and Catalog B must be specified.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     path_a = Path(db_a).resolve()
     path_b = Path(db_b).resolve()
@@ -1091,11 +1048,11 @@ def settings_execute_merge():
 
     if out_path in (path_a, path_b):
         flash("Output database cannot overwrite either source database.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     if out_path.exists():
         flash(f"Output database already exists: {out_path.name}. Choose a different filename or delete it first.", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     try:
         from merge_catalogs import execute_merge
@@ -1108,7 +1065,7 @@ def settings_execute_merge():
     except Exception as e:
         flash(f"Merge failed: {e}", "error")
 
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 @app.route("/settings/database/unmerge", methods=["POST"])
@@ -1123,7 +1080,7 @@ def settings_execute_unmerge():
     source_path = Path(source_db).resolve()
     if not source_path.is_file():
         flash(f"Source database not found: {source_path}", "error")
-        return redirect(url_for("settings_page"))
+        return redirect(url_for("settings_page") + "#database")
 
     out_a_path = (BASE_DIR / out_a_name).resolve()
     out_b_path = (BASE_DIR / out_b_name).resolve()
@@ -1138,7 +1095,7 @@ def settings_execute_unmerge():
     except Exception as e:
         flash(f"Un-merge failed: {e}", "error")
 
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page") + "#database")
 
 
 # --------------------------------------------------------------------------
