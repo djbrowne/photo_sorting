@@ -1,6 +1,7 @@
 photos-09111330.db 
 photos-09081345.db
 photos-091226.db
+photos.db
 thumbnails/*
 .secret_key
 __pycache__/
